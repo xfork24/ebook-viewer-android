@@ -90,7 +90,7 @@ private val NAV_BOOK = mapOf(
     """.trimIndent(),
     "nav.xhtml" to """
         <?xml version="1.0"?>
-        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/epub">
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
         <head><title>nav</title></head><body>
           <nav epub:type="toc">
             <h1>  Contents  </h1>

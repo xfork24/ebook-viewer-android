@@ -39,7 +39,9 @@ class AndroidAssetSource(assetManager: AssetManager) : AssetSource {
     }
 
     private companion object {
-        // viewer.js (2.7MB) + map (0.5MB) + index + a few mathjax files.
-        const val MAX_CACHED = 6
+        // viewer.js (2.7MB) + map (0.5MB) + index + the mathjax chunks
+        // MathJax lazy-loads (startup, loader, core, inputs, output) — the
+        // whole vendored tree is 1.3MB, so 12 entries bounds it comfortably.
+        const val MAX_CACHED = 12
     }
 }

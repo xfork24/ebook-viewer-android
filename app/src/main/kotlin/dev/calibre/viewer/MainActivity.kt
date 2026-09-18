@@ -15,23 +15,27 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import dev.calibre.viewer.eink.EinkKeys
+import dev.calibre.viewer.host.FontSettings
 import dev.calibre.viewer.host.HostUi
+import dev.calibre.viewer.host.StandardFontFamily
 import dev.calibre.viewer.host.UiData
 import dev.calibre.viewer.host.ViewerController
 import dev.calibre.viewer.ui.ViewerScreen
@@ -46,8 +50,12 @@ class MainActivity : ComponentActivity(), HostUi {
 
     private lateinit var controller: ViewerController
     private var host: ViewerWebHost? = null
-    private var immersive = false
+    private var immersive = true
     private var lastDark = false
+
+    /** Classic container: the WebView (index 0) under the overlay ComposeView. */
+    private lateinit var webHolder: FrameLayout
+    private lateinit var composeHolder: ComposeView
 
     /** Bumped to force the AndroidView factory to run again (host rebuild). */
     private val rebuildCounter = mutableIntStateOf(0)
@@ -60,6 +68,19 @@ class MainActivity : ComponentActivity(), HostUi {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // The reader owns the whole panel. Lay out edge-to-edge so system
+        // bars or panel cutouts never shrink the window (on iReader SmartOS
+        // the app otherwise windows short and the page keeps the shrunken
+        // CSS viewport: content in a top band, blank below), and start
+        // immersive — a reading surface shows no chrome by default.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (android.os.Build.VERSION.SDK_INT >= 27) {
+            val lp = window.attributes
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = lp
+        }
+        applyImmersive()
 
         val assets = AndroidAssetSource(assets)
         val isDark = isSystemDark()
@@ -86,15 +107,38 @@ class MainActivity : ComponentActivity(), HostUi {
         // chrome://inspect support for the M1 verification pass.
         android.webkit.WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
-        setContent {
+        // The WebView must live OUTSIDE Compose's AndroidView interop: hosted
+        // there, Blink's CSS viewport height wedges to 0 (vh units, height
+        // media queries and the root percentage containing block collapse —
+        // page renders but every interactive element is 0-sized). A classic
+        // FrameLayout measures the WebView through the normal view pipeline
+        // and the viewport stays correct; the ComposeView on top draws only
+        // the overlays and is kept GONE while none is showing so reading
+        // touches always reach the WebView.
+        webHolder = FrameLayout(this)
+        composeHolder = ComposeView(this)
+        webHolder.addView(composeHolder, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(webHolder)
+
+        composeHolder.setContent {
             val state by controller.state.collectAsState()
-            key(rebuildCounter.intValue) {
-                ViewerScreen(
-                    state = state,
-                    createWebView = ::createWebViewOnce,
-                    onDismissError = controller::dismissError,
-                )
+            LaunchedEffect(rebuildCounter.intValue) { rebuildHost() }
+            composeHolder.visibility = when {
+                state.preparing || state.loadingMessage != null ||
+                    state.errorMessage != null || state.tocVisible || state.searchVisible -> View.VISIBLE
+                else -> View.GONE
             }
+            ViewerScreen(
+                state = state,
+                onDismissError = controller::dismissError,
+                onTocNodeClick = controller::gotoTocNode,
+                onDismissToc = controller::dismissToc,
+                onSearch = controller::startSearch,
+                onSearchStep = controller::stepSearchResult,
+                onSearchResultClick = controller::showSearchResult,
+                onDismissSearch = controller::dismissSearch,
+            )
         }
 
         intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data?.let(::openUri)
@@ -106,21 +150,25 @@ class MainActivity : ComponentActivity(), HostUi {
     }
 
     /**
-     * AndroidView factory. Runs on first composition and again whenever
-     * [rebuildCounter] changes (render-process crash). Plain recompositions
-     * never re-invoke it, so the WebView instance is stable by construction.
+     * (Re)builds the WebView host, adding the WebView to the classic
+     * [webHolder] under the ComposeView. Runs on first composition and again
+     * whenever [rebuildCounter] changes (render-process crash).
      */
-    private fun createWebViewOnce(context: Context): android.webkit.WebView {
+    private fun rebuildHost() {
         host?.let { old ->
             host = null
             old.stopPolling()
             destroyWebView(old.webView)
         }
-        val newHost = ViewerWebHost(context, controller, ::onRenderProcessGone)
+        val newHost = ViewerWebHost(this, controller, ::onRenderProcessGone)
         controller.attachBridge(newHost.bridge)
         host = newHost
+        webHolder.addView(newHost.webView, 0, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // WebPage.__init__ parity: the persisted font sizes must be on the
+        // engine before the deferred initial load renders any book text.
+        controller.applyPersistedFontSettings()
         newHost.startPolling()
-        return newHost.webView
     }
 
     /** WebView renderer died: stop using it, then rebuild the whole stack. */
@@ -166,6 +214,15 @@ class MainActivity : ComponentActivity(), HostUi {
     }
 
     private fun handleBack(): Boolean {
+        // Panels close first, like dialogs over the reader.
+        if (controller.state.value.tocVisible) {
+            controller.dismissToc()
+            return true
+        }
+        if (controller.state.value.searchVisible) {
+            controller.dismissSearch()
+            return true
+        }
         val webView = host?.webView
         return if (webView != null && webView.canGoBack()) {
             webView.goBack()
@@ -227,6 +284,11 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun toggleImmersive(): Boolean {
         immersive = !immersive
+        applyImmersive()
+        return immersive
+    }
+
+    private fun applyImmersive() {
         val controllerCompat = WindowCompat.getInsetsController(window, window.decorView)
         if (immersive) {
             controllerCompat.hide(WindowInsetsCompat.Type.systemBars())
@@ -235,7 +297,28 @@ class MainActivity : ComponentActivity(), HostUi {
         } else {
             controllerCompat.show(WindowInsetsCompat.Type.systemBars())
         }
-        return immersive
+    }
+
+    override fun applyFontSettings(settings: FontSettings): Boolean {
+        val webView = host?.webView ?: return false
+        val s = webView.settings
+        val oldSizes = Triple(s.minimumFontSize, s.defaultFontSize, s.defaultFixedFontSize)
+        val serif = settings.serifFamily ?: DEFAULT_SERIF_FAMILY
+        val sans = settings.sansFamily ?: DEFAULT_SANS_FAMILY
+        val mono = settings.monoFamily ?: DEFAULT_MONO_FAMILY
+        s.serifFontFamily = serif
+        s.sansSerifFontFamily = sans
+        s.fixedFontFamily = mono
+        // The standard font follows whichever family the user picked.
+        s.standardFontFamily = when (settings.standard) {
+            StandardFontFamily.SERIF -> serif
+            StandardFontFamily.SANS -> sans
+            StandardFontFamily.MONO -> mono
+        }
+        s.minimumFontSize = settings.minimumFontSize
+        s.defaultFontSize = settings.defaultFontSize
+        s.defaultFixedFontSize = settings.fixedFontSize
+        return oldSizes != Triple(s.minimumFontSize, s.defaultFontSize, s.defaultFixedFontSize)
     }
 
     override fun copyToClipboard(text: String) {
@@ -260,5 +343,11 @@ class MainActivity : ComponentActivity(), HostUi {
 
     private companion object {
         const val TAG = "MainActivity"
+
+        // Qt resetFontFamily → the platform's default families; the CSS
+        // generic families are the portable Android equivalent.
+        const val DEFAULT_SERIF_FAMILY = "serif"
+        const val DEFAULT_SANS_FAMILY = "sans-serif"
+        const val DEFAULT_MONO_FAMILY = "monospace"
     }
 }

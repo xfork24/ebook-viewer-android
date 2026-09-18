@@ -25,7 +25,7 @@ class ViewerBridgeTest {
 
         override fun eval(js: String, callback: ((String?) -> Unit)?) {
             calls.add(js)
-            if (callback != null && js == "python_comm._poll()") {
+            if (callback != null && js == ViewerBridge.POLL_JS) {
                 callback(pollResponse)
             }
         }
@@ -46,7 +46,7 @@ class ViewerBridgeTest {
         b.onTitleChanged("Some book title")
         assertTrue(js.calls.isEmpty())
         b.onTitleChanged(ViewerBridge.SPECIAL_TITLE + "0")
-        assertEquals(listOf("python_comm._poll()"), js.calls)
+        assertEquals(listOf(ViewerBridge.POLL_JS), js.calls)
     }
 
     @Test
@@ -221,7 +221,7 @@ class ViewerBridgeTest {
         repeat(30) { due.removeFirstOrNull()?.invoke() }
         assertTrue(delays.take(25).all { it == BridgeWatchdog.FAST_INTERVAL_MS })
         assertTrue(delays.drop(25).all { it == BridgeWatchdog.SLOW_INTERVAL_MS })
-        assertEquals(30, js.calls.count { it == "python_comm._poll()" })
+        assertEquals(30, js.calls.count { it == ViewerBridge.POLL_JS })
         // A poll with messages resets the streak.
         js.pollResponse = """[{"type":"signal","name":"quit","args":[]}]"""
         due.removeFirstOrNull()?.invoke()

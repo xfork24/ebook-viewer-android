@@ -17,7 +17,7 @@ private const val XML_NS = "http://www.w3.org/XML/1998/namespace"
 private val PREFERRED_PREFIXES = mapOf(
     "http://purl.org/dc/elements/1.1/" to "dc",
     XLINK_NS to "xlink",
-    "http://www.idpf.org/2007/epub" to "epub",
+    "http://www.idpf.org/2007/ops" to "epub",
     "https://calibre-ebook.com" to "calibre",
     // the package namespace appears both as the tree default and on
     // attributes (opf:role); attributes need a real prefix

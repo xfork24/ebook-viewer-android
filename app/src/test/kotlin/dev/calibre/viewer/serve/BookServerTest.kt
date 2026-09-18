@@ -84,13 +84,20 @@ class BookServerTest {
     }
 
     @Test
-    fun `index and popup stubs return the nbsp div`() {
+    fun `index and popup stubs pull viewer js from the main host`() {
         val s = serverWithBook()
         for (name in listOf("__index__", "__popup__")) {
             val r = s.get("/book/$name", host = BookServer.SANDBOX_HOST)
             assertTrue(r is ServeResult.Ok, "$name failed: $r")
-            val expected = "<div>\u00A0</div>".toByteArray(Charsets.UTF_8)
-            assertTrue((r as ServeResult.Ok).data.contentEquals(expected), "$name bytes mismatch")
+            val html = String((r as ServeResult.Ok).data, Charsets.UTF_8)
+            // The sandbox host only routes book/ and mathjax/, so the stub's
+            // script tag must point at the main host \u2014 without it the book
+            // iframe stays a dead page (no IframeBoss, no content).
+            assertTrue(
+                html.contains("<script src=\"https://${BookServer.FAKE_HOST}/viewer.js\"></script>"),
+                "$name missing viewer.js script tag: $html",
+            )
+            assertTrue(html.contains("\u00A0"), "$name missing NBSP div: $html")
         }
     }
 
@@ -130,20 +137,52 @@ class BookServerTest {
 
     @Test
     fun `mathjax assets resolve and startup gets the loader prefix`() {
+        // The real URL space is flat (mirrors calibre's resources/mathjax
+        // tree): /mathjax/startup.js, /mathjax/input/mml.js, … — viewer.js
+        // loads startup.js from the sandbox host in standalone mode.
         val s = serverWithBook(
             assets = mapOf(
-                "mathjax/es5/startup.js" to "STARTUP".toByteArray(),
-                "mathjax/es5/tex-chtml.js" to "TEX".toByteArray(),
+                "mathjax/startup.js" to "STARTUP".toByteArray(),
+                "mathjax/input/mml.js" to "MML".toByteArray(),
+                "mathjax/output/chtml/fonts/woff-v2/f.woff" to byteArrayOf(1),
                 "pdf-mathjax-loader.js" to "LOADER".toByteArray(),
             )
         )
-        val startup = s.get("/mathjax/es5/startup.js")
+        val startup = s.get("/mathjax/startup.js", host = BookServer.SANDBOX_HOST)
         assertTrue(startup is ServeResult.Ok)
         assertEquals("LOADERSTARTUP", (startup as ServeResult.Ok).data.toString(Charsets.UTF_8))
-        val tex = s.get("/mathjax/es5/tex-chtml.js")
-        assertEquals("TEX", (tex as ServeResult.Ok).data.toString(Charsets.UTF_8))
+        assertEquals("application/javascript", startup.mime)
+        val mml = s.get("/mathjax/input/mml.js", host = BookServer.SANDBOX_HOST)
+        assertEquals("MML", (mml as ServeResult.Ok).data.toString(Charsets.UTF_8))
+        val woff = s.get("/mathjax/output/chtml/fonts/woff-v2/f.woff")
+        assertEquals("font/woff", (woff as ServeResult.Ok).mime)
         assertTrue(s.get("/mathjax/../secrets") is ServeResult.Fail)
         assertTrue(s.get("/mathjax/missing.js") is ServeResult.Fail)
+    }
+
+    @Test
+    fun `packaged mathjax tree has the files the standalone viewer loads`() {
+        // Regression guard for the MathML hang: without this tree every
+        // has_maths book 404s MathJax and section loading stalls forever
+        // behind the "Loading next section from <i>…</i>, please wait" overlay
+        // (the typeset-done event that unblocks it never fires).
+        val base = sequenceOf(
+            File("src/main/assets/viewer/mathjax"),
+            File("app/src/main/assets/viewer/mathjax"),
+        ).firstOrNull { it.isDirectory }
+            ?: error("mathjax asset dir not found from ${File(".").absolutePath}")
+        // The exact set calibre's setup/mathjax.py vendors (loader then
+        // lazy-loads these from the startup.js URL base).
+        for (rel in listOf(
+            "startup.js", "loader.js", "core.js",
+            "input/tex-full.js", "input/asciimath.js",
+            "input/mml.js", "input/mml/entities.js",
+            "output/chtml.js", "output/chtml/fonts/tex.js",
+        )) {
+            assertTrue(File(base, rel).isFile, "missing packaged mathjax file: $rel")
+        }
+        val manifest = Json.parseToJsonElement(File(base, "manifest.json").readText()).jsonObject
+        assertEquals("3.1.4", manifest["version"]?.toString()?.trim('"'))
     }
 
     @Test

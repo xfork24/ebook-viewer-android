@@ -10,8 +10,10 @@ package dev.calibre.viewer.host
 
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 
 class ViewerSignalRouter(private val effects: SignalEffects) {
 
@@ -28,6 +30,16 @@ class ViewerSignalRouter(private val effects: SignalEffects) {
             "set_local_storage" -> effects.setLocalStorage(args.at(0), args.at(1))
             "reload_book" -> effects.reloadBook()
             "toggle_full_screen" -> effects.toggleFullScreen()
+            "toggle_toc" -> effects.toggleToc()
+            "update_current_toc_nodes" -> effects.updateCurrentTocNodes(args.longIdsAt(0))
+            "show_search" -> effects.showSearch(
+                text = args.stringAt(0).orEmpty(),
+                trigger = args.boolAt(1),
+            )
+            "find_next" -> effects.findNext(backwards = args.boolAt(0))
+            // both carry their payload as {search_result: {...}} (kwargs)
+            "search_result_not_found" -> effects.searchResultNotFound(sr = args.searchResultAt())
+            "search_result_discovered" -> effects.searchResultDiscovered(sr = args.searchResultAt())
             "ask_for_open" -> effects.askForOpen()
             "copy_selection" -> effects.copySelection(args.stringAt(0).orEmpty())
             "open_url" -> effects.openUrl(args.stringAt(0).orEmpty())
@@ -53,4 +65,22 @@ class ViewerSignalRouter(private val effects: SignalEffects) {
 
     private fun List<JsonElement>.doubleAt(index: Int): Double? =
         (getOrNull(index) as? JsonPrimitive)?.doubleOrNull
+
+    private fun List<JsonElement>.boolAt(index: Int): Boolean =
+        (getOrNull(index) as? JsonPrimitive)?.content == "true"
+
+    private fun List<JsonElement>.objAt(index: Int): JsonObject? =
+        getOrNull(index) as? JsonObject
+
+    /** search_result_* payload: {search_result: {...}}. */
+    private fun List<JsonElement>.searchResultAt(): JsonObject {
+        val wrapper = objAt(0) ?: return JsonObject(emptyMap())
+        return wrapper["search_result"] as? JsonObject ?: wrapper
+    }
+
+    /** update_current_toc_nodes payload: an array of node ids. */
+    private fun List<JsonElement>.longIdsAt(index: Int): List<Long> {
+        val array = getOrNull(index) as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+        return array.mapNotNull { (it as? JsonPrimitive)?.longOrNull }
+    }
 }

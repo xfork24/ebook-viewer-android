@@ -13,11 +13,16 @@ two deliberate divergences, applied via the set_data placeholder map:
     __EDITABLE_FORMATS__ -> []
         (no book editing on Android; hides the "edit book" affordances)
 
-and one prepended preamble:
+and two Android WebView compatibility adaptations:
 
     tools/compat.js -> start of viewer.js
         (ES5 shim for WebViews below Chromium 98 that lack
          window.structuredClone — frozen vendor WebViews on e-ink readers)
+
+    dvh/dvw -> vh/vw in generated CSS strings and viewer.html
+        (old vendor WebViews discard dynamic viewport-unit declarations;
+         an embedded WebView has no browser chrome, so legacy viewport units
+         have the same desired semantics and keep the reader full-height)
 
 Everything else — compiler invocation (external rapydscript CLI, beautified,
 private scope, baselib included, tree-shaken, source-mapped), the single-pass
@@ -52,6 +57,10 @@ NO_SEARCH_LINK_RE = re.compile(r"^NO_SEARCH_LINK = '([^']+)'", re.M)
 NUMERIC_VERSION_RE = re.compile(r'^numeric_version = \((\d+), (\d+), (\d+)\)', re.M)
 CHARS_RE = re.compile(r'^CHARS_PER_LINE = (\d+)', re.M)
 LINES_RE = re.compile(r'^LINES_PER_PAGE = (\d+)', re.M)
+ANDROID_VIEWPORT_UNIT_RE = re.compile(r'(?<=\d)d(vh|vw)\b')
+RUNTIME_TEMPLATE_PLACEHOLDERS = {
+    '__ENTRY_POINT__', '__EXTRA__', '__FONT__', '__PRIMARY__', '__SCRIPT__', '__TOP__',
+}
 
 
 def die(msg: str) -> None:
@@ -174,13 +183,23 @@ def apply_set_data(code: str, table: dict) -> str:
         code = code.replace(k, v, 1)
     # Guard against upstream growing a placeholder we do not know about: an
     # unreplaced __SOME_CONSTANT__ token would ship silently inside viewer.js.
-    leftover = re.search(r'__[A-Z][A-Z_]{2,}__', code)
-    if leftover:
-        die(f'unreplaced placeholder in viewer.js: {leftover.group(0)} '
+    placeholders = set(re.findall(r'__[A-Z][A-Z_]{2,}__', code))
+    leftovers = placeholders - RUNTIME_TEMPLATE_PLACEHOLDERS
+    if leftovers:
+        die(f'unreplaced placeholder in viewer.js: {sorted(leftovers)[0]} '
             '(upstream set_data() grew — extend parse_set_data_constants)')
     code = code.rstrip()
     code = code.removesuffix('//# sourceMappingURL=smap')
     return code + '\n//# sourceMappingURL=viewer.js.map'
+
+
+def use_android_viewport_units(text: str) -> str:
+    """Replace dynamic viewport units unsupported by frozen e-ink WebViews.
+
+    Unlike a mobile browser, the app-owned WebView has no collapsing address
+    bar, so vh/vw describe exactly the viewport calibre needs here.
+    """
+    return ANDROID_VIEWPORT_UNIT_RE.sub(r'\1', text)
 
 
 def sha256(path: Path) -> str:
@@ -226,19 +245,22 @@ def main() -> None:
           f'chars_per_page={table["__CHARS_PER_PAGE__"]}')
 
     code, source_map = compile_viewer(calibre, args.rapydscript)
-    js = apply_set_data(code, table)
+    js = use_android_viewport_units(apply_set_data(code, table))
     # Preamble first so it is in place before any viewer.js code runs; see
     # the docstring for why this must stay ES5.
     compat = (REPO / 'tools' / 'compat.js').read_text(encoding='utf-8')
     js = compat + '\n' + js
 
-    reset = (calibre / 'resources' / 'content-server' / 'reset.css').read_text(encoding='utf-8')
-    base_css = (calibre / 'resources' / 'content-server' / 'base.css').read_text(encoding='utf-8')
+    reset = use_android_viewport_units(
+        (calibre / 'resources' / 'content-server' / 'reset.css').read_text(encoding='utf-8'))
+    base_css = use_android_viewport_units(
+        (calibre / 'resources' / 'content-server' / 'base.css').read_text(encoding='utf-8'))
     icons = merge_icons(calibre)
     # Same composition as compile_viewer()'s viewer.html, plus the two scripts
     # the Qt host would inject (translations placeholder, then viewer.js).
     index_html = (
         '<!DOCTYPE html>\n<html><head>'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         f'<style>{reset}</style><style>{base_css}</style>'
         '<script>window.calibre_translations_data=null</script>'
         f'</head><body>{icons}<script src="/viewer.js"></script></body></html>'

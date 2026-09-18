@@ -193,7 +193,11 @@ class ViewerBridge(
         /** calibre.constants.SPECIAL_TITLE_FOR_WEBENGINE_COMMS. */
         const val SPECIAL_TITLE = "__webengine_messages_pending__"
 
-        private const val POLL_JS = "python_comm._poll()"
+        // Guarded: during page (re)loads python_comm is briefly absent, and
+        // an unguarded reference would surface as an uncaught exception in
+        // the page console for every watchdog tick. Internal for the
+        // protocol tests, which assert on the exact JS emitted.
+        internal const val POLL_JS = "window.python_comm ? python_comm._poll() : null"
 
         /** json.dumps(tuple(from_js signal names)) — bound by _register_signals. */
         private val REGISTER_SIGNALS_JSON: String = Json.encodeToString(

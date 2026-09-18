@@ -99,6 +99,11 @@ class BookServer(
         if (name == "viewer.js.map") {
             return asset("viewer.js.map", "application/json")
         }
+        if (name == "favicon.ico") {
+            // WebView auto-requests this; Qt never does, so upstream has no
+            // route. An empty 200 keeps the console clean.
+            return ServeResult.Ok("image/x-icon", ByteArray(0))
+        }
         if (name.startsWith("reader-background-")) {
             return backgroundResult(name.removePrefix("reader-background-"))
         }
@@ -147,7 +152,17 @@ class BookServer(
         const val SANDBOX_HOST = "appassets.androidplatform.sandbox"
         val ALLOWED_HOSTS = setOf(FAKE_HOST, SANDBOX_HOST)
 
-        // b'<div>\xa0</div>' — NBSP, not &nbsp;.
-        private val INDEX_STUB = "<div>\u00A0</div>".toByteArray(Charsets.UTF_8)
+        // Upstream serves b'<div>\xa0</div>' (NBSP, not &nbsp;) and injects
+        // viewer.js into subframes as a QWebEngineScript; WebView cannot
+        // inject into subframes, so the stub must pull viewer.js itself.
+        // viewer.js is served from the MAIN host - the sandbox host only
+        // routes book/ and mathjax/ - and viewer-main.pyj routes on
+        // pathname (endsWith /__index__ -> iframe_main, /__popup__ ->
+        // footnotes_main), which the stub URL satisfies.
+        private val INDEX_STUB = (
+            "<!DOCTYPE html><html><head>" +
+                "<script src=\"https://$FAKE_HOST/viewer.js\"></script>" +
+                "</head><body><div>\u00A0</div></body></html>"
+            ).toByteArray(Charsets.UTF_8)
     }
 }

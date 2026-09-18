@@ -21,6 +21,15 @@ interface HostUi {
      */
     fun toggleImmersive(): Boolean
 
+    /**
+     * apply_font_settings — push session-data-derived font sizes/families
+     * onto the WebView (the standalone viewer sizes book text through the
+     * engine defaults, not JS).
+     * @return true when the font SIZES changed (the caller answers with the
+     *   viewer_font_size_changed signal)
+     */
+    fun applyFontSettings(settings: FontSettings): Boolean
+
     /** copy_selection — put text on the system clipboard. */
     fun copyToClipboard(text: String)
 

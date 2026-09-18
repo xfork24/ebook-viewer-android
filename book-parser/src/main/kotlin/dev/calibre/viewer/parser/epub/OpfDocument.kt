@@ -16,7 +16,9 @@ import dev.calibre.viewer.parser.dom.XmlWriter
 
 const val OPF_NS = "http://www.idpf.org/2007/opf"
 const val DC_NS = "http://purl.org/dc/elements/1.1/"
-const val EPUB_NS = "http://www.idpf.org/2007/epub"
+
+/** oeb/base.py EPUB_NS — the epub: prefix (epub:type, epub:properties). */
+const val EPUB_NS = "http://www.idpf.org/2007/ops"
 const val CALIBRE_PREFIX_URI = "https://calibre-ebook.com"
 const val NCX_NS = "http://www.daisy.org/z3986/2005/ncx/"
 

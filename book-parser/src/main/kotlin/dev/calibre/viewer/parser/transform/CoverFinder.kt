@@ -18,6 +18,7 @@ import dev.calibre.viewer.parser.dom.XLINK_NS
 import dev.calibre.viewer.parser.epub.BookContainer
 import dev.calibre.viewer.parser.epub.MimeTypes
 import dev.calibre.viewer.parser.epub.getLandmarks
+import dev.calibre.viewer.parser.util.PYTHON_WS_PLUS
 
 object CoverFinder {
 
@@ -216,21 +217,14 @@ object CoverFinder {
     }
 }
 
-/**
- * xml2text(body) = etree.tostring(method='text', with_tail=False): elements'
- * .text plus every node's .tail — comments/PIs contribute NOTHING (verified
- * against lxml). Collapsed with Python re \s+ which is Unicode-aware (NBSP,
- * ideographic space); kotlin's RegexOption doesn't expose that JDK flag, so
- * compile the Pattern directly. The two whitespace definitions only differ
- * on \x1c-\x1f, which cannot appear inside lxml text anyway (invalid XML).
- */
-private val WS_PLUS = java.util.regex.Pattern.compile("\\s+", java.util.regex.Pattern.UNICODE_CHARACTER_CLASS)
-
 private fun DomElement.collectText(): String {
     val sb = StringBuilder()
     for (node in walk()) {
         if (node is DomElement) node.text?.let { sb.append(it) }
         node.tail?.let { sb.append(it) }
     }
-    return WS_PLUS.matcher(sb).replaceAll("")
+    // Collapsed with Python re \s+ (Unicode-aware: NBSP, ideographic space).
+    // PYTHON_WS_PLUS spells the class out because Android regex has no
+    // UNICODE_CHARACTER_CLASS — using the flag crashed at class-init on ART.
+    return PYTHON_WS_PLUS.replace(sb, "")
 }

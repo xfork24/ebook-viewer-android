@@ -21,6 +21,9 @@ class ViewerWebViewClient(
     private val onRenderGone: (() -> Unit)? = null,
 ) : WebViewClient() {
 
+    /** One-shot: the post-load viewport re-sync runs at most once. */
+    private var viewportKicked = false
+
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest,
@@ -52,6 +55,21 @@ class ViewerWebViewClient(
         // stack, and report the crash as handled (no system crash dialog).
         onRenderGone?.invoke()
         return true
+    }
+
+    override fun onPageFinished(view: WebView, url: String) {
+        // Some vendor WebViews (iReader SmartOS, older Chromium) never
+        // re-dispatch a CSS resize when the native view settles after the
+        // load started, leaving the page laid out against the intermediate
+        // bounds — content in a short band at the top, blank below. One
+        // fresh layout pass plus a synthetic resize makes the viewer
+        // re-measure; a no-op when the geometry was already correct.
+        if (viewportKicked) return
+        viewportKicked = true
+        view.post {
+            view.requestLayout()
+            view.evaluateJavascript("window.dispatchEvent(new Event('resize'))", null)
+        }
     }
 
     private fun errorResponse(status: Int, reason: String): WebResourceResponse =

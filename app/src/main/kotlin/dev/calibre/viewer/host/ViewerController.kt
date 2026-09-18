@@ -37,10 +37,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 class ViewerController(
@@ -59,7 +61,9 @@ class ViewerController(
 
     private val sessionStore = SessionStore(File(filesDir, "session"))
     private val lastReadStore = LastReadStore(File(filesDir, "last-read.json"))
-    private val renderCache = RenderBookCache(File(cacheDir, "ev2"))
+    // RenderBookCache lays out <root>/ev2/{f,t}/ itself (mirroring
+    // convert_book.py); hand it the plain cache dir, not an ev2 subdir.
+    private val renderCache = RenderBookCache(cacheDir)
     private val bookOpener = BookOpener(renderCache, File(filesDir, "books"), domParserFactory, log)
     private val router = ViewerSignalRouter(this)
 
@@ -74,6 +78,20 @@ class ViewerController(
     val state: StateFlow<ViewerUiState> = _state
 
     private var current: BookOpener.OpenedBook? = null
+
+    /** Search core for the open book; rebuilt on openBook. */
+    private var searcher: BookSearcher? = null
+
+    private var searchJob: Job? = null
+
+    /** The query behind searchResults — echoed into each show_search_result. */
+    private var lastQuery: SearchQuery? = null
+
+    /** ui.py's discovery_counter — tags discovery sends so the page can tell them from user clicks. */
+    private var searchDiscoveryCounter: Long = 0
+
+    /** True after start_book_load until the first spine item is displayed. */
+    private var awaitingBookDisplay = false
 
     /** Retained so reload_book can re-copy the same source. */
     private var lastCopy: ((File) -> Unit)? = null
@@ -103,20 +121,24 @@ class ViewerController(
 
     /** Signal entry point handed to the ViewerBridge constructor. */
     fun onSignal(name: String, args: List<JsonElement>) {
-        log("signal: $name ${args.joinToString(",").take(200)}")
         router.dispatch(name, args)
     }
 
     /**
      * Open a book: [copy] drains the source (SAF stream) into the staging
      * slot, then the render pipeline runs on the IO dispatcher and
-     * start_book_load is queued/sent. UI state flips to Reading on the
-     * view_created signal, not here — the page is the source of truth.
+     * start_book_load is queued/sent. UI state flips to Reading once the
+     * first content_file_changed arrives — the page is the source of truth.
      */
     fun openBook(copy: (File) -> Unit) {
         if (_state.value.preparing) return
         lastCopy = copy
-        _state.value = _state.value.copy(preparing = true, errorMessage = null, loadingMessage = null)
+        awaitingBookDisplay = false
+        _state.value = _state.value.copy(
+            preparing = true, errorMessage = null, loadingMessage = null, tocVisible = false,
+            searchVisible = false, searchResults = emptyList(), searching = false,
+            currentResultNum = null, currentName = null,
+        )
         scope.launch {
             try {
                 val opened = withContext(ioDispatcher) {
@@ -127,6 +149,16 @@ class ViewerController(
                 val viewerBook = ViewerBook.open(opened.bookDir, opened.sourceFile.path)
                     ?: throw IOException("Rendered book is incomplete: ${opened.bookDir}")
                 bookServer.setBook(viewerBook)
+                // The native TOC panel and the search core are fed from the
+                // rendered manifest — the same file the Qt docks load their
+                // models from.
+                val manifest = withContext(ioDispatcher) { manifestFor(opened.bookDir) }
+                searcher = manifest?.let { BookSearcher(opened.bookDir, it) }
+                _state.value = _state.value.copy(
+                    tocRows = TocRows.fromManifest(manifest?.get("toc") as? JsonObject),
+                    viewedTocNodes = emptySet(),
+                    tocVisible = false,
+                )
                 if (bridge != null) {
                     sendBookLoad(opened, lastReadStore.get(opened.bookHash))
                 }
@@ -135,6 +167,7 @@ class ViewerController(
                 throw e
             } catch (e: Exception) {
                 log("open book failed: $e")
+                awaitingBookDisplay = false
                 _state.value = _state.value.copy(preparing = false, errorMessage = friendlyError(e))
             }
         }
@@ -150,6 +183,15 @@ class ViewerController(
         _state.value = _state.value.copy(errorMessage = null)
     }
 
+    /** The Qt host loads manifest['toc'] for its dock model; same source here. */
+    private fun manifestFor(bookDir: File): JsonObject? = try {
+        val manifestText = File(bookDir, "calibre-book-manifest.json").readText(Charsets.UTF_8)
+        Json.parseToJsonElement(manifestText).jsonObject
+    } catch (e: Exception) {
+        log("manifest load failed: $e")
+        null
+    }
+
     /** Flush the debounced last-read position; call from onStop. */
     fun persistNow() {
         lastReadJob?.cancel()
@@ -160,7 +202,10 @@ class ViewerController(
 
     /** Render-process crash: the WebView stack is being rebuilt. */
     fun onRenderProcessGone() {
-        _state.value = _state.value.copy(preparing = false, loadingMessage = null)
+        awaitingBookDisplay = false
+        _state.value = _state.value.copy(
+            preparing = false, loadingMessage = null, tocVisible = false, searchVisible = false,
+        )
     }
 
     /** System palette changed (dark-mode toggle) → set_system_palette. */
@@ -168,14 +213,34 @@ class ViewerController(
         bridge?.call("set_system_palette", colors)
     }
 
+    /**
+     * WebPage.__init__ parity: seed a freshly built WebView with the
+     * persisted font settings before any content loads. No signal — the
+     * initial layout picks the sizes up directly.
+     */
+    fun applyPersistedFontSettings() {
+        hostUi.applyFontSettings(fontSettingsFromSessionData(sessionStore.sessionDataJson))
+    }
+
     // ---- SignalEffects ------------------------------------------------------
 
     override fun viewCreated() {
-        _state.value = _state.value.copy(preparing = false, bookOpen = true)
+        // This means the top-level viewer shell exists. It is emitted once
+        // when create_view runs, normally before any book has been selected,
+        // so it cannot be used as the completion signal for start_book_load.
     }
 
     override fun contentFileChanged(name: String?) {
-        // Upstream tracks it for the window title; the Android shell has none.
+        // Emitted from View.on_content_loaded after the iframe has rendered
+        // its first spine item. This is the per-book completion signal;
+        // view_created only describes the lifetime of the viewer shell.
+        if (!name.isNullOrEmpty()) {
+            _state.value = _state.value.copy(currentName = name)
+        }
+        if (awaitingBookDisplay && !name.isNullOrEmpty()) {
+            awaitingBookDisplay = false
+            _state.value = _state.value.copy(preparing = false, bookOpen = true)
+        }
     }
 
     override fun updateLastReadPosition(cfi: String, posFrac: Double) {
@@ -197,7 +262,17 @@ class ViewerController(
     }
 
     override fun setSessionData(key: JsonElement, value: JsonElement) {
+        // web_view.py:set_session_data — font-key changes additionally push
+        // the values onto the web engine and, when a SIZE changed, answer
+        // with viewer_font_size_changed so pagination is recomputed.
+        val before = sessionStore.sessionDataJson
         sessionStore.setSessionData(key, value)
+        if (touchesFontKeys(before, sessionStore.sessionDataJson)) {
+            val settings = fontSettingsFromSessionData(sessionStore.sessionDataJson)
+            if (hostUi.applyFontSettings(settings)) {
+                bridge?.executeWhenReady("viewer_font_size_changed")
+            }
+        }
     }
 
     override fun setLocalStorage(key: JsonElement, value: JsonElement) {
@@ -216,6 +291,140 @@ class ViewerController(
         bridge?.call("full_screen_state_changed", JsonPrimitive(immersive))
     }
 
+    override fun toggleToc() {
+        _state.value = _state.value.copy(tocVisible = !_state.value.tocVisible)
+    }
+
+    override fun updateCurrentTocNodes(ids: List<Long>) {
+        val viewed = TocRows.viewedWithAncestors(_state.value.tocRows, ids)
+        if (viewed != _state.value.viewedTocNodes) {
+            _state.value = _state.value.copy(viewedTocNodes = viewed)
+        }
+    }
+
+    /** Panel row click → goto_toc_node(node_id) and hide the panel. */
+    fun gotoTocNode(id: Long) {
+        _state.value = _state.value.copy(tocVisible = false)
+        bridge?.executeWhenReady("goto_toc_node", JsonPrimitive(id))
+    }
+
+    /** Back key / tap outside the panel. */
+    fun dismissToc() {
+        if (_state.value.tocVisible) {
+            _state.value = _state.value.copy(tocVisible = false)
+        }
+    }
+
+    // ---- search (gui2/viewer/search.py + ui.py wiring) ----------------------
+
+    /** show_search(text, trigger): open the panel; trigger runs immediately. */
+    override fun showSearch(text: String, trigger: Boolean) {
+        _state.value = _state.value.copy(searchVisible = true, searchPrefill = text, tocVisible = false)
+        if (trigger && text.isNotBlank()) {
+            startSearch(text, SearchMode.NORMAL, caseSensitive = false)
+        }
+    }
+
+    /**
+     * SearchPanel's search button: run the query over the rendered book and
+     * stream every result to the page (on_discovery) so it can jump to the
+     * first visible match, exactly like run_searches/on_result_found.
+     */
+    fun startSearch(text: String, mode: SearchMode, caseSensitive: Boolean) {
+        val book = searcher ?: return
+        val query = SearchQuery(text = text, mode = mode, caseSensitive = caseSensitive)
+        if (query.isEmpty) return
+        lastQuery = query
+        searchJob?.cancel()
+        searchDiscoveryCounter += 1
+        val discovery = searchDiscoveryCounter
+        _state.value = _state.value.copy(
+            searchResults = emptyList(), searching = true, currentResultNum = null,
+        )
+        searchJob = scope.launch {
+            var found = emptyList<SearchResult>()
+            try {
+                val startName = _state.value.currentName
+                val searchRun = withContext(ioDispatcher) {
+                    val results = ArrayList<SearchResult>()
+                    val ran = book.search(query, startName) { results.add(it) }
+                    ran to results.toList()
+                }
+                val (ran, results) = searchRun
+                found = results
+                // WebView calls must happen on the controller/main dispatcher.
+                // Send the completion marker only after every discovery result;
+                // nested launches previously allowed it to overtake the results.
+                for (result in found) {
+                    bridge?.executeWhenReady(
+                        "show_search_result",
+                        result.forJs(mode, JsonPrimitive(discovery)),
+                    )
+                }
+                _state.value = _state.value.copy(searchResults = found.toList(), searching = false)
+                if (ran) {
+                    // the finished marker (on_result_found's SearchFinished branch)
+                    bridge?.executeWhenReady(
+                        "show_search_result",
+                        buildJsonObject {
+                            put("on_discovery", true)
+                            put("search_finished", true)
+                            put("result_num", -1)
+                        },
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("search failed: $e")
+                _state.value = _state.value.copy(searchResults = found.toList(), searching = false)
+            }
+        }
+    }
+
+    /** find_next(previous) from the page, and the panel's prev/next buttons. */
+    override fun findNext(backwards: Boolean) = stepSearchResult(backwards)
+
+    fun stepSearchResult(backwards: Boolean) {
+        val results = _state.value.searchResults
+        if (results.isEmpty()) return
+        val current = _state.value.currentResultNum ?: return
+        val i = results.indexOfFirst { it.resultNum == current }
+        if (i < 0) return
+        val next = results[Math.floorMod(i + if (backwards) -1 else 1, results.size)]
+        showSearchResult(next.resultNum)
+    }
+
+    /** Panel row click (or stepped selection) → navigate the page to it. */
+    fun showSearchResult(resultNum: Long) {
+        val result = _state.value.searchResults.firstOrNull { it.resultNum == resultNum } ?: return
+        _state.value = _state.value.copy(currentResultNum = resultNum, searchVisible = false)
+        bridge?.executeWhenReady(
+            "show_search_result",
+            result.forJs(lastQuery?.mode ?: SearchMode.NORMAL),
+        )
+    }
+
+    override fun searchResultNotFound(sr: JsonObject) {
+        val results = _state.value.searchResults
+        val updated = results.map { if (it.isResult(sr)) it.hidden() else it }
+        if (updated != results) {
+            _state.value = _state.value.copy(searchResults = updated)
+        }
+    }
+
+    override fun searchResultDiscovered(sr: JsonObject) {
+        val num = (sr["result_num"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return
+        _state.value = _state.value.copy(currentResultNum = num)
+    }
+
+    /** Back key / tap outside the panel. Results are kept for re-opening. */
+    fun dismissSearch() {
+        if (_state.value.searchVisible) {
+            _state.value = _state.value.copy(searchVisible = false)
+        }
+    }
+
     override fun askForOpen() {
         hostUi.pickBook()
     }
@@ -229,7 +438,10 @@ class ViewerController(
     }
 
     override fun showError(title: String, details: String) {
+        awaitingBookDisplay = false
         _state.value = _state.value.copy(
+            preparing = false,
+            loadingMessage = null,
             errorMessage = if (details.isEmpty()) title else "$title\n\n$details",
         )
     }
@@ -256,6 +468,7 @@ class ViewerController(
     }
 
     private fun sendBookLoad(book: BookOpener.OpenedBook, saved: LastReadStore.LastReadPosition?) {
+        awaitingBookDisplay = true
         bridge?.startBookLoad(
             renderedBookDir = book.bookDir.path,
             initialPosition = saved?.cfi?.let { cfiToPosition(it) },

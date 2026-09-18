@@ -11,6 +11,18 @@ import java.math.BigInteger
 import java.security.SecureRandom
 
 /**
+ * Python 3 `re` `\s` for str patterns: ASCII whitespace plus the C0 file
+ * separators U+001C-U+001F, NEL U+0085, NBSP U+00A0, U+1680, U+2000-U+200A,
+ * U+2028/U+2029, U+202F, U+205F and the ideographic space U+3000. Android's
+ * java.util.regex supports neither the JDK-only UNICODE_CHARACTER_CLASS flag
+ * nor a Unicode-aware bare `\s` — and the flag crashes at class-init on ART
+ * (ExceptionInInitializerError, seen opening any EPUB on-device) — so the
+ * class is spelled out; identical behavior on JVM and Android.
+ */
+val PYTHON_WS_PLUS: Regex =
+    Regex("[ \\t\\n\\u000B\\u000C\\r\\u001C-\\u001F\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000]+")
+
+/**
  * itertools.count() equivalent — yields 0, 1, 2, … forever. Toc.toMap ids and
  * the anchor maps must start at 0 because render_book.py:606 seeds them with
  * count() (and the viewer's TOC bookkeeping treats the ids as opaque but

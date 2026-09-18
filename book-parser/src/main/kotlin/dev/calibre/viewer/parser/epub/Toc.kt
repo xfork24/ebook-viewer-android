@@ -10,6 +10,7 @@ package dev.calibre.viewer.parser.epub
 
 import dev.calibre.viewer.parser.dom.DomElement
 import dev.calibre.viewer.parser.dom.XHTML_NS
+import dev.calibre.viewer.parser.util.PYTHON_WS_PLUS
 
 /** One TOC node; the root carries the book-level metadata. */
 class Toc(title: String?, dest: String?, frag: String?) {
@@ -361,7 +362,9 @@ private fun elemToTocText(elem: DomElement): String {
     var text = subtreeText(elem).trim()
     if (text.isEmpty()) text = elem.getAttr("title") ?: ""
     if (text.isEmpty()) text = elem.getAttr("alt") ?: ""
-    text = Regex("\\s+").replace(text.trim(), " ")
+    // Python re.sub(r'\s+', ' ', …) on str is Unicode-aware (CJK titles carry
+    // U+3000); bare Kotlin \s is ASCII-only, so use the spelled-out class.
+    text = PYTHON_WS_PLUS.replace(text.trim(), " ")
     text = text.take(1000).trim()
     return text.ifEmpty { "(Untitled)" }
 }

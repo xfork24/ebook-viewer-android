@@ -74,11 +74,16 @@ class ViewerWebHost(
      * percentage containing block all stay 0 forever — resizes only update
      * window.innerWidth/innerHeight). Deferred loading matches the Qt host,
      * where the page always loads into an already-sized QWebEngineView.
+     *
+     * The attach check matters on vendor window managers (iReader SmartOS,
+     * launch animations): pre-attach measure passes can carry intermediate
+     * window bounds, and a page parsed against those keeps the shrunken CSS
+     * viewport — content confined to a short band at the top.
      */
     private fun loadWhenLaidOut(url: String) {
         webView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
-                if (webView.width > 0 && webView.height > 0) {
+                if (webView.isAttachedToWindow && webView.width > 0 && webView.height > 0) {
                     webView.viewTreeObserver.removeOnGlobalLayoutListener(this)
                     if (webView.url == null) webView.loadUrl(url)
                 }

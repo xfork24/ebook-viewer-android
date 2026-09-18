@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android / IDE
+local.properties
+.idea/
+*.iml
+.cxx/
+captures/
+output.json
+
+# Kotlin
+.kotlin/
+
+# OS
+.DS_Store
+
+# Python (tools)
+__pycache__/
+*.pyc
+
+# Fixture corpora (generated)
+book-parser/src/test/resources/fixtures/generated/

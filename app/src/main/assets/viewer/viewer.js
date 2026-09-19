@@ -35307,12 +35307,13 @@ return this.__repr__();
                 // Top-row clock: give the time enough room that
                 // it is not clipped at the right edge.
                 ".read-book-main-overlay-timer{max-width:22% !important;}",
-                // Aa text-icon: vertical-center inside its flex
-                // button parent so the 175% glyph aligns with
-                // the regular-weight label text on its middle,
-                // not on its baseline. line-height:1 + flex stretch
-                // keeps Latin glyph ascenders from floating above
-                // the CJK text buttons in the same row.
+                // Aa text-icon: vertical-center inside its flex button
+                // parent so the 175% bold Latin glyph aligns
+                // with the regular-weight CJK label text on
+                // its middle, not on its baseline. line-height:1
+                // + inline-block keep the glyph bounding box
+                // exactly font-size tall so the flex center
+                // calculation lines up.
                 ".read-book-main-overlay-action-control{align-items:center !important;display:inline-flex !important;gap:0.4em !important;}",
                 ".read-book-main-overlay-text-icon{align-self:center !important;line-height:1 !important;display:inline-block !important;}",
                 ".read-book-main-overlay-action-icon{align-self:center !important;}",
@@ -35323,7 +35324,10 @@ return this.__repr__();
                 // chain (which assumed an <ul> wrapper) misses
                 // after the flatten. Color inherits so hover /
                 // active rules upstream drive the per-button tint.
-                ".read-book-main-overlay-action-control{appearance:none !important;-webkit-appearance:none !important;background:transparent !important;background-image:none !important;color:inherit !important;border:0 !important;}",
+                // A 1px black outline + the same padding the
+                // colored-version buttons used to have so the
+                // tappable area stays unchanged.
+                ".read-book-main-overlay-action-control{appearance:none !important;-webkit-appearance:none !important;background:transparent !important;background-image:none !important;color:inherit !important;border:1px solid #000 !important;padding:0.4em 1ex !important;margin:2px !important;}",
             ].join("");
         });
         // __android_js_ui_scale__
@@ -35369,6 +35373,29 @@ return this.__repr__();
                 // touch targets.
                 "#book-overlay input,#book-overlay select,#book-overlay textarea,#book-overlay button,#book-overlay td,#book-overlay th,#book-overlay label,#book-overlay h1,#book-overlay h2,#book-overlay h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
                 ".modal-container input,.modal-container select,.modal-container textarea,.modal-container button,.modal-container td,.modal-container th,.modal-container label,.modal-container h1,.modal-container h2,.modal-container h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
+                // Two-column form rows in Preferences / Go-to:
+                // the default td vertical-align:baseline puts
+                // the label baseline on a different line than
+                // the select/input baseline (a control's
+                // baseline is its bottom; a text run's is the
+                // glyph baseline). The label reads "pinned to
+                // top", the control sits "pinned to bottom".
+                // Force middle for both panels, and widen the
+                // vertical padding so the row has real height
+                // to center within.
+                "#book-overlay td,#book-overlay th,.modal-container td,.modal-container th{vertical-align:middle !important;padding:0.4em 0.6em !important;}",
+                // Center each secondary panel's contents
+                // (Go-to / Preferences / Reading Stats /
+                // Lookup) inside the overlay container. The
+                // overlay itself is an absolute-positioned
+                // full-screen box; with no flex on its direct
+                // child the form rows anchor to the top edge
+                // and leave a lot of empty space below.
+                "#book-overlay{display:flex !important;align-items:center !important;justify-content:center !important;}",
+                "#book-overlay>div,.modal-container>div{margin:auto !important;display:flex !important;flex-direction:column !important;align-items:center !important;}",
+                // Tighten the inter-row spacing — the form
+                // tables would otherwise sit far apart.
+                "#book-overlay table,.modal-container table{border-collapse:collapse !important;}",
                 // Generic fallback for any leftover viewer.js element.
                 "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",
                 // Universal bump: every non-input, non-script element inside

@@ -38,6 +38,14 @@ class AndroidAssetSource(assetManager: AssetManager) : AssetSource {
         return bytes
     }
 
+    /**
+     * Drop the cached asset bytes (viewer.js alone is 2.7MB). Wired to
+     * onTrimMemory(UI_HIDDEN): the next read re-opens the zip entry, which
+     * is exactly the trade a backgrounded reader should make.
+     */
+    @Synchronized
+    fun clearCache() = cache.clear()
+
     private companion object {
         // viewer.js (2.7MB) + map (0.5MB) + index + the mathjax chunks
         // MathJax lazy-loads (startup, loader, core, inputs, output) — the

@@ -9,6 +9,7 @@ package dev.calibre.viewer
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -52,6 +53,7 @@ class MainActivity : ComponentActivity(), HostUi {
     private lateinit var controller: ViewerController
     private var host: ViewerWebHost? = null
     private var lastDark = false
+    private lateinit var assetSource: AndroidAssetSource
 
     /** Classic container: the WebView (index 0) under the overlay ComposeView. */
     private lateinit var webHolder: FrameLayout
@@ -96,7 +98,7 @@ class MainActivity : ComponentActivity(), HostUi {
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         applyImmersive()
 
-        val assets = AndroidAssetSource(assets)
+        val assets = AndroidAssetSource(assets).also { assetSource = it }
         val isDark = isSystemDark()
         lastDark = isDark
         controller = ViewerController(
@@ -113,6 +115,11 @@ class MainActivity : ComponentActivity(), HostUi {
             log = { Log.d(TAG, it) },
         )
         controller.hostUi = this
+
+        // Startup housekeeping: the ev2 render cache grows without bound
+        // otherwise; sweep month-old entries and cap at 256MB off the main
+        // thread (never touches the book currently being opened).
+        controller.trimRenderCache()
 
         onBackPressedDispatcher.addCallback(this) {
             if (!handleBack()) finish()
@@ -379,6 +386,17 @@ class MainActivity : ComponentActivity(), HostUi {
     override fun onStop() {
         super.onStop()
         controller.persistNow()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // UI_HIDDEN (the app moved fully to the background) is the only
+        // level where dropping the asset LRU pays off — at harsher levels
+        // the process is about to die anyway, and the WebView's own memory
+        // dwarfs anything we control here.
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && ::assetSource.isInitialized) {
+            assetSource.clearCache()
+        }
     }
 
     override fun onDestroy() {

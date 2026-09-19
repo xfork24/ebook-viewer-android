@@ -378,6 +378,19 @@ class ViewerController(
         openBook(lastOriginKey, copy)
     }
 
+    /**
+     * Housekeeping sweep for the ev2 render cache (exploded books on disk):
+     * drop entries untouched for a month, then cap the tree at [maxBytes],
+     * never touching the currently open book. Called once at startup — the
+     * cache grows without bound otherwise and these are 1-2GB devices.
+     */
+    fun trimRenderCache(maxBytes: Long = RENDER_CACHE_MAX_BYTES) {
+        scope.launch(ioDispatcher) {
+            renderCache.evictOlderThan(RENDER_CACHE_AGE_MS)
+            renderCache.evictToSize(maxBytes, _state.value.currentBookHash)
+        }
+    }
+
     override fun toggleToc() {
         _state.value = _state.value.copy(tocVisible = !_state.value.tocVisible)
     }
@@ -917,6 +930,10 @@ class ViewerController(
 
     private companion object {
         const val LAST_READ_DEBOUNCE_MS = 2_000L
+
+        /** Render-cache housekeeping: 30 days untouched, 256MB ceiling. */
+        const val RENDER_CACHE_AGE_MS = 30L * 24 * 60 * 60 * 1000
+        const val RENDER_CACHE_MAX_BYTES = 256L * 1024 * 1024
 
         /** Session keys gating the desktop welcome overlay (viewer.js). */
         const val CONTROLS_HELP_KEY = "controls_help_shown_count"

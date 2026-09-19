@@ -46,7 +46,11 @@ class RenderBookCache(private val rootDir: File) {
      * Look up an already-rendered book by [sourceFile]'s hash. Returns null
      * when the cache is cold OR the entry was previously evicted (the on-disk
      * `f/<hash>/` directory disappears with the index entry).
+     *
+     * Synchronized: a concurrent trim (evictToSize) must not observe a
+     * half-committed entry.
      */
+    @Synchronized
     fun lookup(sourceFile: File): File? {
         val hash = calculateBookHash(sourceFile)
         val dir = File(finishedDir, hash)
@@ -70,7 +74,12 @@ class RenderBookCache(private val rootDir: File) {
     /**
      * Move [transientDir] into the finished cache under [sourceFile]'s hash
      * and record the index entry. Returns the finished directory.
+     *
+     * Synchronized against a concurrent trim: evictToSize reads the index
+     * and the finished tree together; without the lock it could delete a
+     * directory whose rename completed but whose index entry it never saw.
      */
+    @Synchronized
     fun commit(sourceFile: File, transientDir: File): File {
         val hash = calculateBookHash(sourceFile)
         val target = File(finishedDir, hash)
@@ -98,12 +107,49 @@ class RenderBookCache(private val rootDir: File) {
     }
 
     /** Drop every finished entry whose last access is older than [olderThanMillis]. */
+    @Synchronized
     fun evictOlderThan(olderThanMillis: Long) {
         val now = System.currentTimeMillis()
         val idx = readIndex()
         for ((hash, entry) in idx.toMap()) {
             val acc = entry["accessed"] as? Long ?: 0L
             if (now - acc > olderThanMillis) evict(hash)
+        }
+    }
+
+    /**
+     * Evict finished entries until the finished tree is at most [maxBytes]
+     * on disk. Orphaned `f/<hash>/` directories (index entry lost to a crash
+     * between rename and index write) go first — nothing else can reclaim
+     * them — then entries evict oldest-accessed first. [protect] (the
+     * currently open book's hash) is never evicted; when it alone exceeds
+     * the budget the loop stops rather than delete the book being read.
+     */
+    @Synchronized
+    fun evictToSize(maxBytes: Long, protect: String? = null) {
+        val idx = readIndex()
+        val sizes = HashMap<String, Long>()
+        var total = 0L
+        val onDisk = finishedDir.listFiles()?.filter { it.isDirectory } ?: return
+        for (dir in onDisk) {
+            val size = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            sizes[dir.name] = size
+            if (dir.name !in idx.keys) {
+                // Orphan: no index entry, unreachable by lookup.
+                dir.deleteRecursively()
+            } else {
+                total += size
+            }
+        }
+        val byAge = idx.keys
+            .filter { it != protect && File(finishedDir, it).isDirectory }
+            .sortedBy { idx[it]?.get("accessed") as? Long ?: 0L }
+        for (hash in byAge) {
+            if (total <= maxBytes) break
+            if (File(finishedDir, hash).deleteRecursively()) {
+                removeIndexEntry(hash)
+                total -= sizes[hash] ?: 0L
+            }
         }
     }
 

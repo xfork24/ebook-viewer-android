@@ -127,4 +127,85 @@ class RenderBookCacheTest {
         assertEquals(f1, f2)
         assertEquals("{\"v\":2}", File(f2, "manifest.json").readText())
     }
+
+    // ---- evictToSize ------------------------------------------------------
+
+    private fun commitBook(cache: RenderBookCache, payloadBytes: Int): File {
+        val src = makeFile()
+        val trans = cache.createTransient()
+        File(trans, "calibre-book-manifest.json").writeText("{}")
+        File(trans, "payload.bin").writeBytes(ByteArray(payloadBytes))
+        return cache.commit(src, trans)
+    }
+
+    /** Rewrite an entry's accessed stamp directly in index.json (age control). */
+    private fun backdateAccess(root: File, cache: RenderBookCache, src: File, finishedDir: File, ageMillis: Long) {
+        val hash = cache.calculateBookHash(src)
+        check(finishedDir.name == hash) { "dir ${finishedDir.name} != hash $hash" }
+        val idxFile = File(root, "ev2/index.json")
+        val text = idxFile.readText()
+        val entry = Regex("\"$hash\":\\{[^{}]*\\}").find(text)?.value ?: error("no index entry for $hash")
+        val stamped = System.currentTimeMillis() - ageMillis
+        val updated = entry.replaceFirst(Regex("\"accessed\":\\d+"), "\"accessed\":$stamped")
+        idxFile.writeText(text.replace(entry, updated))
+    }
+
+    @Test
+    fun `evictToSize is a no-op when the cache is under budget`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val a = commitBook(cache, payloadBytes = 10_000)
+        val b = commitBook(cache, payloadBytes = 10_000)
+        cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
+        assertTrue(a.isDirectory)
+        assertTrue(b.isDirectory)
+    }
+
+    @Test
+    fun `evictToSize evicts the oldest accessed entry first`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val oldSrc = makeFile()
+        val oldTrans = cache.createTransient()
+        File(oldTrans, "calibre-book-manifest.json").writeText("{}")
+        File(oldTrans, "payload.bin").writeBytes(ByteArray(100_000))
+        val old = cache.commit(oldSrc, oldTrans)
+        backdateAccess(root, cache, oldSrc, old, ageMillis = 10L * 24 * 60 * 60 * 1000)
+        val recent = commitBook(cache, payloadBytes = 100_000)
+        // Budget only fits ~one payload: the old entry must go, recent stays.
+        cache.evictToSize(maxBytes = 120_000)
+        assertFalse(old.isDirectory, "oldest entry should have been evicted")
+        assertTrue(recent.isDirectory, "recent entry should survive")
+    }
+
+    @Test
+    fun `evictToSize never evicts the protected book`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val oldSrc = makeFile()
+        val oldTrans = cache.createTransient()
+        File(oldTrans, "calibre-book-manifest.json").writeText("{}")
+        File(oldTrans, "payload.bin").writeBytes(ByteArray(100_000))
+        val old = cache.commit(oldSrc, oldTrans)
+        backdateAccess(root, cache, oldSrc, old, ageMillis = 10L * 24 * 60 * 60 * 1000)
+        // Zero budget, but the old book IS the protected (currently open) one.
+        cache.evictToSize(maxBytes = 0, protect = old.name)
+        assertTrue(old.isDirectory, "protected book must never be evicted")
+    }
+
+    @Test
+    fun `evictToSize removes orphaned finished dirs`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val book = commitBook(cache, payloadBytes = 10_000)
+        // A directory under f/ with no index entry — e.g. a crash between
+        // rename and index write. Unreachable through lookup(); only the
+        // size sweep can reclaim it.
+        val orphan = File(root, "ev2/f/${"f".repeat(40)}")
+        orphan.mkdirs()
+        File(orphan, "junk.bin").writeBytes(ByteArray(50_000))
+        cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
+        assertFalse(orphan.isDirectory, "orphan dir should be reclaimed")
+        assertTrue(book.isDirectory, "indexed entry should be untouched")
+    }
 }

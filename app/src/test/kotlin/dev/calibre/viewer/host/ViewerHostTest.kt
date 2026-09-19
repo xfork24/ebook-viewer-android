@@ -184,6 +184,16 @@ class ViewerHostTest {
     }
 
     @Test
+    fun `native picker error is visible before open starts`() {
+        val controller = newController(tempRoot(), FakeJs(), FakeHostUi())
+
+        controller.showOpenError("picker returned no URI")
+
+        assertFalse(controller.state.value.preparing)
+        assertEquals("picker returned no URI", controller.state.value.errorMessage)
+    }
+
+    @Test
     fun `last read position restores into start book load`() {
         val root = tempRoot()
         val js = FakeJs()

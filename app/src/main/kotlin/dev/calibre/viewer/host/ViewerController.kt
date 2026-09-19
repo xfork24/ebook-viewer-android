@@ -252,6 +252,16 @@ class ViewerController(
         _state.value = _state.value.copy(errorMessage = null)
     }
 
+    /** Native input/picker failures that happen before [openBook] starts. */
+    fun showOpenError(message: String) {
+        awaitingBookDisplay = false
+        _state.value = _state.value.copy(
+            preparing = false,
+            loadingMessage = null,
+            errorMessage = message,
+        )
+    }
+
     /** The Qt host loads manifest['toc'] for its dock model; same source here. */
     private fun manifestFor(bookDir: File): JsonObject? = try {
         val manifestText = File(bookDir, "calibre-book-manifest.json").readText(Charsets.UTF_8)
@@ -900,8 +910,8 @@ class ViewerController(
     private fun friendlyError(e: Throwable): String = when (e) {
         is InvalidBookException -> e.message ?: "Invalid book"
         is ZipException -> "不是有效的 EPUB 文件（无法解压）"
-        is FileNotFoundException -> "找不到书籍文件"
-        is SecurityException -> "无权读取所选文件"
+        is FileNotFoundException -> "找不到或无法读取书籍文件，请通过应用内“选择书籍”重新选择"
+        is SecurityException -> "无权读取所选文件，请通过应用内“选择书籍”重新授权"
         else -> "打开书籍失败：${e.message ?: e.javaClass.simpleName}"
     }
 

@@ -7,7 +7,6 @@
 
 package dev.calibre.viewer
 
-import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -23,7 +22,6 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
-import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,6 +43,7 @@ import dev.calibre.viewer.web.ViewerWebHost
 import java.io.File
 import java.io.FileNotFoundException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
@@ -62,8 +61,14 @@ class MainActivity : ComponentActivity(), HostUi {
     private val rebuildCounter = mutableIntStateOf(0)
 
     private val pickBook =
-        registerForActivityResult(OpenPersistableDocument()) { uri ->
-            uri?.let(::openUri)
+        registerForActivityResult(OpenBookDocument()) { result ->
+            when (result) {
+                BookPickerResult.Cancelled -> Unit
+                BookPickerResult.MissingUri -> controller.showOpenError(
+                    "系统文件选择器没有返回可读取的文件，请换用其他文件管理器后重试",
+                )
+                is BookPickerResult.Selected -> openRequest(result.request)
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -160,12 +165,13 @@ class MainActivity : ComponentActivity(), HostUi {
             )
         }
 
-        intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data?.let(::openUri)
+        intent?.takeIf { it.action == Intent.ACTION_VIEW }?.let(::handleOpenIntent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        intent.takeIf { it.action == Intent.ACTION_VIEW }?.data?.let(::openUri)
+        setIntent(intent)
+        intent.takeIf { it.action == Intent.ACTION_VIEW }?.let(::handleOpenIntent)
     }
 
     /**
@@ -211,53 +217,83 @@ class MainActivity : ComponentActivity(), HostUi {
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
 
-    private fun openUri(uri: Uri) {
-        // Persistable grants only exist for ACTION_OPEN_DOCUMENT results; an
-        // ACTION_VIEW grant (file managers' "open with") is transient. Taking
-        // it when possible means the recents entry survives reboots; a
-        // SecurityException just degrades to session-only.
-        if (uri.scheme == "content") {
-            try {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            } catch (e: SecurityException) {
-                // Expected for ACTION_VIEW sources.
-            }
+    private fun handleOpenIntent(intent: Intent) {
+        val request = intent.toBookOpenRequest()
+        if (request == null) {
+            controller.showOpenError("打开请求没有包含可读取的文件地址")
+            return
         }
+        openRequest(request)
+    }
+
+    private fun openRequest(request: BookOpenRequest) {
+        val uri = request.uri
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != null && scheme != "content" && scheme != "file") {
+            controller.showOpenError("不支持的文件地址类型：$scheme")
+            return
+        }
+        Log.i(
+            TAG,
+            "open request action=${request.sourceAction} carrier=${request.carrier} " +
+                "scheme=$scheme authority=${uri.authority} flags=0x${request.grantFlags.toString(16)}",
+        )
+        // openBook flips the UI into its preparing state synchronously, then
+        // copies and parses on Dispatchers.IO. In particular, do not make any
+        // ContentResolver/Binder call on the main thread before this point:
+        // BOOX DocumentsProvider builds have been observed to wedge instead
+        // of rejecting unsupported persistable-grant requests.
         controller.openBook(originKey = uri.toString()) { destination ->
             drainInto(uri, destination)
+            persistReadGrantInBackground(request)
+        }
+    }
+
+    private fun persistReadGrantInBackground(request: BookOpenRequest) {
+        if (request.uri.scheme != "content" || !hasPersistableReadGrant(request.grantFlags)) return
+        // Copy first while the transient grant is unquestionably valid. The
+        // best-effort persist call is deliberately detached from the open
+        // pipeline: a broken vendor provider may block this Binder call, but
+        // it must never freeze the UI or prevent the staged book from opening.
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    request.uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+                Log.d(TAG, "persisted read grant for authority=${request.uri.authority}")
+            } catch (e: SecurityException) {
+                Log.w(TAG, "provider did not allow a persistent read grant", e)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "failed to persist read grant", e)
+            }
         }
     }
 
     /** ask_for_open(recent path): open the original source directly. */
     override fun tryOpenRecent(path: String): Boolean {
         val uri = Uri.parse(path)
-        val readable = if (uri.scheme == "content") {
-            try {
-                contentResolver.openInputStream(uri)?.close() != null
-            } catch (e: Exception) {
-                false
-            }
-        } else {
-            File(uri.path ?: path).canRead()
-        }
-        if (!readable) {
-            Toast.makeText(this, R.string.recent_unavailable, Toast.LENGTH_SHORT).show()
-            return false
-        }
-        controller.openBook(originKey = path) { destination -> drainInto(uri, destination) }
+        // Do not probe a content provider synchronously on the main thread.
+        // The IO open below will either succeed or surface the normal friendly
+        // error overlay; probing first can itself hang on vendor providers.
+        openRequest(
+            BookOpenRequest(
+                uri = uri,
+                grantFlags = 0,
+                sourceAction = "recent",
+                carrier = BookUriCarrier.RECENT,
+            ),
+        )
         return true
     }
 
     /** Copy a book source (SAF stream or plain file) into the staging slot. */
     private fun drainInto(uri: Uri, destination: File) {
-        val input: java.io.InputStream = if (uri.scheme == "content") {
-            contentResolver.openInputStream(uri)
+        val input: java.io.InputStream = when (uri.scheme?.lowercase()) {
+            "content" -> contentResolver.openInputStream(uri)
                 ?: throw FileNotFoundException(uri.toString())
-        } else {
-            File(uri.path ?: uri.toString()).inputStream()
+            "file", null -> File(uri.path ?: uri.toString()).inputStream()
+            else -> throw FileNotFoundException("Unsupported URI scheme: ${uri.scheme}")
         }
         input.use { source ->
             destination.outputStream().use { source.copyTo(it) }
@@ -359,7 +395,7 @@ class MainActivity : ComponentActivity(), HostUi {
     // ---- HostUi -------------------------------------------------------------
 
     override fun pickBook() {
-        pickBook.launch(arrayOf("application/epub+zip", "application/octet-stream"))
+        pickBook.launch(Unit)
     }
 
     override fun finishApp() {
@@ -428,22 +464,4 @@ class MainActivity : ComponentActivity(), HostUi {
         const val DEFAULT_SANS_FAMILY = "sans-serif"
         const val DEFAULT_MONO_FAMILY = "monospace"
     }
-}
-
-/**
- * ACTION_OPEN_DOCUMENT that additionally requests a persistable read grant,
- * so recently-opened entries keep working across reboots (the plain
- * OpenDocument contract never sets the flag and the grant dies with the
- * process). The activity calls takePersistableUriPermission on the result.
- */
-private class OpenPersistableDocument : ActivityResultContract<Array<String>, Uri?>() {
-    override fun createIntent(context: Context, input: Array<String>): Intent =
-        Intent(Intent.ACTION_OPEN_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("*/*")
-            .putExtra(Intent.EXTRA_MIME_TYPES, input)
-            .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-
-    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
-        intent?.data?.takeIf { resultCode == Activity.RESULT_OK }
 }

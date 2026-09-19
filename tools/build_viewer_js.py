@@ -309,9 +309,17 @@ def main() -> None:
     )
     # Same composition as compile_viewer()'s viewer.html, plus the two scripts
     # the Qt host would inject (translations placeholder, then viewer.js).
+    #
+    # Inject the Android WebView root font-size up front. Otherwise the
+    # default Android root size (~32px on a 420dpi panel) gives every
+    # 1.5em×n em descendant a "too big then small" flash before viewer.js's
+    # create_view() sets documentElement.style.fontSize = "10pt" — the home
+    # pitch and toolbar render at 48px for a few hundred ms, then collapse
+    # to 20px. Mirror UiData.kt:put("ui_font_sz", "10pt") here.
     index_html = (
         '<!DOCTYPE html>\n<html><head>'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+        '<style>html{font-size:10pt !important}</style>'
         f'<style>{reset}</style><style>{base_css}</style>{eink_motion_css}'
         '<script>window.calibre_translations_data=null</script>'
         f'</head><body>{icons}<script src="/viewer.js"></script></body></html>'
@@ -534,6 +542,13 @@ def main() -> None:
     # buttons become direct children of the actions div and wrap
     # button-by-button (rows fill evenly). DOM-level, so it works on old
     # e-ink WebViews that lack display:contents.
+    #
+    # Critically, the next add_extra_css block must REWRITE main_overlay_css's
+    # `...> ul > li > .action-control` selectors to `...> li > .action-control`
+    # — otherwise the flatten leaves buttons outside any <ul>, the selector
+    # chain misses, and Android WebView's UA <button> background (the
+    # top-white-bottom-grey gradient the user sees) plus the unstyled icon
+    # vertical alignment sneak back in.
     create_actions_return_literal = (
         '            return actions_div;\n'
         '        };\n'
@@ -781,36 +796,58 @@ def main() -> None:
             '        });'
         )
         # Anchor on `add_extra_css(main_overlay_css);` (the always-present
-        # upstream call) and append BOTH the flex-wrap rule and the global
-        # JS-side UI scale rule in one replace, so we don't depend on the
-        # order of the two patch blocks below.
+        # upstream call) and append BOTH the flex-wrap rule (rewritten for
+        # the flattened DOM — `> li >` instead of `> ul > li >`) and the
+        # global JS-side UI scale rule in one replace.
+        #
+        # Three things were broken by the earlier `> ul > li >` selectors
+        # after the flatten:
+        #   1. button background fell back to the Android WebView UA
+        #      default (the top-white/bottom-grey gradient the user sees).
+        #      `.read-book-main-overlay-action-control` styles never
+        #      matched because the <ul> wrapper was stripped.
+        #   2. Aa text-icon (a <span> instead of <svg>) sat at the
+        #      baseline of the row instead of vertically centered, because
+        #      its parent flex lost the upstream `align-items: center`.
+        #   3. The top-row clock (max-width: 9%) got squeezed off the
+        #      right edge once the title takes ~90%; bumped to 22%.
         js = js.replace(
             'add_extra_css(main_overlay_css);',
             'add_extra_css(main_overlay_css);\n'
             '        add_extra_css(function () {\n'
             '            return [\n'
+            '                // The flattened DOM: <li> is now a direct child\n'
+            '                // of the actions div (no <ul>). Rewriting the\n'
+            '                // selector chain is what makes the button\n'
+            '                // background/border/icon-alignment CSS match\n'
+            '                // again — without this the Android WebView UA\n'
+            '                // button background bleeds through.\n'
             '                ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",\n'
             '                ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",\n'
             '                ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",\n'
-            '                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"\n'
+            '                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}",\n'
+            '                // Top-row clock: give the time enough room that\n'
+            '                // it is not clipped at the right edge.\n'
+            '                ".read-book-main-overlay-timer{max-width:22% !important;}",\n'
+            '                // Aa text-icon: vertical-center inside its flex\n'
+            '                // button parent so the 175% glyph aligns with\n'
+            '                // the regular-weight label text on its middle,\n'
+            '                // not on its baseline. line-height:1 + flex stretch\n'
+            '                // keeps Latin glyph ascenders from floating above\n'
+            '                // the CJK text buttons in the same row.\n'
+            '                ".read-book-main-overlay-action-control{align-items:center !important;display:inline-flex !important;gap:0.4em !important;}",\n'
+            '                ".read-book-main-overlay-text-icon{align-self:center !important;line-height:1 !important;display:inline-block !important;}",\n'
+            '                ".read-book-main-overlay-action-icon{align-self:center !important;}",\n'
+            '                // Toolbar buttons: neutralize the Android WebView\n'
+            '                // UA <button> chrome (default grey gradient\n'
+            '                // background, inherited color, native appearance)\n'
+            '                // that bleeds through once the upstream selector\n'
+            '                // chain (which assumed an <ul> wrapper) misses\n'
+            '                // after the flatten. Color inherits so hover /\n'
+            '                // active rules upstream drive the per-button tint.\n'
+            '                ".read-book-main-overlay-action-control{appearance:none !important;-webkit-appearance:none !important;background:transparent !important;background-image:none !important;color:inherit !important;border:0 !important;}",\n'
             '            ].join("");\n'
             '        });\n' + ui_scale_rule,
-            1,
-        )
-
-    # ---- toolbar CSS: flex-wrap so action buttons flow into one line ----
-    if 'read-book-main-overlay-actions{display:flex' not in js:
-        js = js.replace(
-            'add_extra_css(main_overlay_css);',
-            'add_extra_css(main_overlay_css);\n'
-            '        add_extra_css(function () {\n'
-            '            return [\n'
-            '                ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",\n'
-            '                ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",\n'
-            '                ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",\n'
-            '                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"\n'
-            '            ].join("");\n'
-            '        });',
             1,
         )
 

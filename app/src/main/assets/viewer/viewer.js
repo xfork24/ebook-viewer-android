@@ -35294,10 +35294,36 @@ return this.__repr__();
         add_extra_css(main_overlay_css);
         add_extra_css(function () {
             return [
+                // The flattened DOM: <li> is now a direct child
+                // of the actions div (no <ul>). Rewriting the
+                // selector chain is what makes the button
+                // background/border/icon-alignment CSS match
+                // again — without this the Android WebView UA
+                // button background bleeds through.
                 ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",
                 ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",
                 ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",
-                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"
+                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}",
+                // Top-row clock: give the time enough room that
+                // it is not clipped at the right edge.
+                ".read-book-main-overlay-timer{max-width:22% !important;}",
+                // Aa text-icon: vertical-center inside its flex
+                // button parent so the 175% glyph aligns with
+                // the regular-weight label text on its middle,
+                // not on its baseline. line-height:1 + flex stretch
+                // keeps Latin glyph ascenders from floating above
+                // the CJK text buttons in the same row.
+                ".read-book-main-overlay-action-control{align-items:center !important;display:inline-flex !important;gap:0.4em !important;}",
+                ".read-book-main-overlay-text-icon{align-self:center !important;line-height:1 !important;display:inline-block !important;}",
+                ".read-book-main-overlay-action-icon{align-self:center !important;}",
+                // Toolbar buttons: neutralize the Android WebView
+                // UA <button> chrome (default grey gradient
+                // background, inherited color, native appearance)
+                // that bleeds through once the upstream selector
+                // chain (which assumed an <ul> wrapper) misses
+                // after the flatten. Color inherits so hover /
+                // active rules upstream drive the per-button tint.
+                ".read-book-main-overlay-action-control{appearance:none !important;-webkit-appearance:none !important;background:transparent !important;background-image:none !important;color:inherit !important;border:0 !important;}",
             ].join("");
         });
         // __android_js_ui_scale__

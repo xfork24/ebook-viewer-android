@@ -47,6 +47,16 @@ class LastReadStore(file: File) {
         persist()
     }
 
+    /**
+     * One-time migration (inbox mtime pinning): move a book's entry from the
+     * old render hash to the new one. No-op when the old entry is absent.
+     */
+    @Synchronized fun rekey(oldBookHash: String, newBookHash: String) {
+        val entry = entries.remove(oldBookHash) ?: return
+        entries[newBookHash] = entry
+        persist()
+    }
+
     @Synchronized private fun load(): MutableMap<String, JsonObject> {
         if (!storeFile.isFile) return LinkedHashMap()
         val text = try {

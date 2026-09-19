@@ -13,6 +13,14 @@ sealed interface ServeResult {
     data class Ok(val mime: String, val data: ByteArray) : ServeResult
 
     /**
+     * 200 with a body streamed straight off disk — book files never land in
+     * memory as a whole (a chunky image-rich EPUB chapter can be tens of
+     * MB). Chromium reads and closes the stream itself; the host side must
+     * NEVER close it or wrap it in use{}.
+     */
+    class OkStream(val mime: String, val data: java.io.InputStream) : ServeResult
+
+    /**
      * Non-200. Status mirrors the QWebEngineUrlRequestJob.Error codes the
      * upstream handler uses: 404 UrlNotFound (missing/unroutable), 403
      * RequestDenied (non-GET), and 400 RequestFailed (book file read error).

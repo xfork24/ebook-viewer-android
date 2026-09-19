@@ -9,6 +9,7 @@ package dev.calibre.viewer.serve
 
 import dev.calibre.viewer.parser.epub.MimeTypes
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 
 class ViewerBook private constructor(
@@ -54,23 +55,27 @@ class ViewerBook private constructor(
     }
 
     /**
-     * get_data(): read one book file. Null → the caller answers 404; an
-     * IOException propagates → the caller answers 400 (upstream
-     * distinguishes UrlNotFound from RequestFailed the same way).
+     * get_data(): open one book file for streaming. Null → the caller
+     * answers 404; an IOException from the open propagates → the caller
+     * answers 400 (upstream distinguishes UrlNotFound from RequestFailed
+     * the same way). The file is opened EAGERLY here so a vanished file
+     * raises in the router (which knows the error mapping) rather than on
+     * Chromium's reader thread. Ownership transfers to Chromium: it reads
+     * and closes the stream — the host must never close it.
      */
-    class BookFile(val mime: String, val bytes: ByteArray)
+    class BookFile(val mime: String, val stream: FileInputStream)
 
     fun getData(name: String): BookFile? {
         val path = SafeBookPath.resolve(bookDir, name) ?: return null
         if (!path.isFile) return null
-        val raw = path.readBytes()
+        val stream = path.inputStream()
         // Same font-mime normalization + css charset suffix as the upstream
         // book/ branch — it keeps the Chromium console free of warnings and
         // makes css files decode as UTF-8 (we always write UTF-8).
         var mime = MimeTypes.guessType(name)
         mime = FONT_MIME_FIXES[mime] ?: mime
         if (mime == MimeTypes.CSS) mime = "$mime; charset=utf-8"
-        return BookFile(mime, raw)
+        return BookFile(mime, stream)
     }
 }
 

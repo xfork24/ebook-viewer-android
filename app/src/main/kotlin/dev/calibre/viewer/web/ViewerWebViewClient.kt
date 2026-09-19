@@ -43,6 +43,12 @@ class ViewerWebViewClient(
                 val mime = splitResponseMime(result.mime)
                 WebResourceResponse(mime.type, mime.encoding, ByteArrayInputStream(result.data))
             }
+            is ServeResult.OkStream -> {
+                // Chromium reads and closes this stream itself; never close
+                // or use{} it here (see OkStream).
+                val mime = splitResponseMime(result.mime)
+                WebResourceResponse(mime.type, mime.encoding, result.data)
+            }
             is ServeResult.Fail -> {
                 Log.w(TAG, "Failing ${request.method} $uri: ${result.reason}")
                 errorResponse(result.status, reasonPhrase(result.status))

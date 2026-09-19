@@ -71,7 +71,9 @@ class BookServer(
             }
             val b = book ?: return ServeResult.Fail(404, "No book open for /$name")
             val file = b.getData(bookName) ?: return ServeResult.Fail(404, "Not found /$name")
-            return ServeResult.Ok(file.mime, file.bytes)
+            // Streamed, not buffered: big image-rich chapters never occupy
+            // host memory as a whole. Chromium owns (and closes) the stream.
+            return ServeResult.OkStream(file.mime, file.stream)
         }
         if (name == "manifest") {
             // b'[' + manifest + b',' + metadata + b']' — with no book this is

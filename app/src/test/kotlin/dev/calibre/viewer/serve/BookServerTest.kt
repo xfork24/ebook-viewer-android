@@ -72,15 +72,27 @@ class BookServerTest {
     }
 
     @Test
-    fun `book files are served with name-derived mimes`() {
+    fun `book files stream with name-derived mimes`() {
         val s = serverWithBook()
         // ch1.html holds html_as_json content after rendering, but the mime
         // follows the NAME (guess_type) — upstream serves it as text/html and
         // the viewer reads XHR responseText regardless of mime.
         val html = s.get("/book/ch1.html")
-        assertTrue(html is ServeResult.Ok && (html as ServeResult.Ok).mime == "text/html")
+        assertTrue(html is ServeResult.OkStream && html.mime == "text/html")
         val css = s.get("/book/style.css")
-        assertTrue(css is ServeResult.Ok && (css as ServeResult.Ok).mime == "text/css; charset=utf-8")
+        assertTrue(css is ServeResult.OkStream && css.mime == "text/css; charset=utf-8")
+    }
+
+    @Test
+    fun `streamed book content matches the file bytes`() {
+        val s = serverWithBook()
+        val r = s.get("/book/style.css")
+        assertTrue(r is ServeResult.OkStream)
+        // Chromium would read the stream to EOF; we own it in the test, so
+        // close it ourselves after draining.
+        r.data.use { stream ->
+            assertEquals("body{}", stream.readBytes().toString(Charsets.UTF_8))
+        }
     }
 
     @Test
@@ -114,7 +126,7 @@ class BookServerTest {
     @Test
     fun `sandbox host only allows book and mathjax prefixes`() {
         val s = serverWithBook()
-        assertTrue(s.get("/book/ch1.html", host = BookServer.SANDBOX_HOST) is ServeResult.Ok)
+        assertTrue(s.get("/book/ch1.html", host = BookServer.SANDBOX_HOST) is ServeResult.OkStream)
         assertTrue(s.get("/manifest", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)
         assertTrue(s.get("/", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)
         assertTrue(s.get("/viewer.js", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)

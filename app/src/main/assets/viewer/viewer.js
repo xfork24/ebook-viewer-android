@@ -35391,8 +35391,17 @@ return this.__repr__();
                 // full-screen box; with no flex on its direct
                 // child the form rows anchor to the top edge
                 // and leave a lot of empty space below.
-                "#book-overlay{display:flex !important;align-items:center !important;justify-content:center !important;}",
+                "#book-overlay{display:flex !important;flex-direction:column !important;align-items:center !important;justify-content:center !important;}",
                 "#book-overlay>div,.modal-container>div{margin:auto !important;display:flex !important;flex-direction:column !important;align-items:center !important;}",
+                // The second-level panels (book-list, prefs
+                // sub-pages) render an inner <div> that's
+                // display:block — flex alignItems does not
+                // center a block child inside a flex parent.
+                // Force every nested panel child to its own
+                // intrinsic width and centered, so the row of
+                // cards / form rows sits visually centered
+                // instead of stretching full-width.
+                "#book-overlay>div>div,.modal-container>div>div{width:fit-content !important;max-width:100% !important;margin:0 auto !important;align-self:center !important;}",
                 // Tighten the inter-row spacing — the form
                 // tables would otherwise sit far apart.
                 "#book-overlay table,.modal-container table{border-collapse:collapse !important;}",

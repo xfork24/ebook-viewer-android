@@ -15,7 +15,12 @@
 package dev.calibre.viewer.host
 
 import dev.calibre.viewer.bridge.ViewerBridge
+import dev.calibre.viewer.core.annot.AnnotationsStore
+import dev.calibre.viewer.core.annot.BookmarkRecord
+import dev.calibre.viewer.core.annot.HighlightRecord
 import dev.calibre.viewer.core.lastread.LastReadStore
+import dev.calibre.viewer.core.profile.ProfileStore
+import dev.calibre.viewer.core.rates.ReadingRatesStore
 import dev.calibre.viewer.core.session.SessionStore
 import dev.calibre.viewer.parser.dom.DomParser
 import dev.calibre.viewer.parser.epub.InvalidBookException
@@ -38,10 +43,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
@@ -61,11 +71,34 @@ class ViewerController(
 
     private val sessionStore = SessionStore(File(filesDir, "session"))
     private val lastReadStore = LastReadStore(File(filesDir, "last-read.json"))
+    private val annotationsStore = AnnotationsStore(File(filesDir, "annot"))
+    private val profileStore = ProfileStore(File(filesDir, "profiles.json"))
+    private val ratesStore = ReadingRatesStore(File(filesDir, "reading-rates.json"))
     // RenderBookCache lays out <root>/ev2/{f,t}/ itself (mirroring
     // convert_book.py); hand it the plain cache dir, not an ev2 subdir.
     private val renderCache = RenderBookCache(cacheDir)
     private val bookOpener = BookOpener(renderCache, File(filesDir, "books"), domParserFactory, log)
     private val router = ViewerSignalRouter(this)
+
+    init {
+        // One-time migration: inboxes staged before mtime pinning hash with
+        // their real mtime; re-date the file and re-key every store hanging
+        // off the old hash (position, annotations, rates), then drop the old
+        // render-cache entry (one re-render on the next open of that book).
+        bookOpener.normalizeLegacyInbox()?.let { (oldHash, newHash) ->
+            lastReadStore.rekey(oldHash, newHash)
+            annotationsStore.rekey(oldHash, newHash)
+            ratesStore.rekey(oldHash, newHash)
+            // The rekeys above are queued writes and the inbox mtime is
+            // already pinned — process death before they land would orphan
+            // the old-hash entries forever (the migration won't re-fire).
+            // Block until they're on disk, then drop the old cache entry.
+            annotationsStore.flush()
+            ratesStore.flush()
+            renderCache.evict(oldHash)
+            log("migrated legacy inbox hash $oldHash -> $newHash")
+        }
+    }
 
     /** Set by the activity before the WebView starts loading. */
     lateinit var hostUi: HostUi
@@ -95,6 +128,7 @@ class ViewerController(
 
     /** Retained so reload_book can re-copy the same source. */
     private var lastCopy: ((File) -> Unit)? = null
+    private var lastOriginKey: String? = null
 
     private var lastReadJob: Job? = null
     private var pendingPosition: Pair<String, Double>? = null
@@ -105,7 +139,7 @@ class ViewerController(
         this.bridge = bridge
         bridge.onReady = {
             bridge.createView(
-                sessionData = sessionStore.sessionDataJson,
+                sessionData = seededSessionData(),
                 localStorage = sessionStore.localStorageJson,
                 fieldMetadata = fieldMetadata,
                 uiData = uiData,
@@ -116,7 +150,16 @@ class ViewerController(
         // onCreate (WebView not composed yet) or a WebView rebuild after a
         // render-process crash. Re-send — executeWhenReady queues it behind
         // create_view, and the keyed dict overwrites harmlessly otherwise.
-        current?.let { sendBookLoad(it, lastReadStore.get(it.bookHash)) }
+        // Highlights MUST ride along: seeded empty, the page's next
+        // highlights_changed would push a 1-item array and wipe the stored
+        // list for this book.
+        current?.let {
+            sendBookLoad(
+                it,
+                lastReadStore.get(it.bookHash),
+                annotationsStore.loadHighlights(it.bookHash),
+            )
+        }
     }
 
     /** Signal entry point handed to the ViewerBridge constructor. */
@@ -127,23 +170,36 @@ class ViewerController(
     /**
      * Open a book: [copy] drains the source (SAF stream) into the staging
      * slot, then the render pipeline runs on the IO dispatcher and
-     * start_book_load is queued/sent. UI state flips to Reading once the
-     * first content_file_changed arrives — the page is the source of truth.
+     * start_book_load is queued/sent. [originKey] is the opaque key the book
+     * was opened by (the SAF content URI) — it becomes pathtoebook so the
+     * page's recents list dedupes per source book and echoes it back through
+     * ask_for_open. UI state flips to Reading once the first
+     * content_file_changed arrives — the page is the source of truth.
      */
-    fun openBook(copy: (File) -> Unit) {
+    fun openBook(originKey: String? = null, copy: (File) -> Unit) {
         if (_state.value.preparing) return
+        // A still-running search for the previous book must not keep
+        // streaming results into the freshly loaded page.
+        searchJob?.cancel()
         lastCopy = copy
+        lastOriginKey = originKey
         awaitingBookDisplay = false
         _state.value = _state.value.copy(
             preparing = true, errorMessage = null, loadingMessage = null, tocVisible = false,
             searchVisible = false, searchResults = emptyList(), searching = false,
+            searchError = null,
             currentResultNum = null, currentName = null,
+            bookmarksVisible = false, highlightsVisible = false, profilesVisible = false,
+            bookmarks = emptyList(), highlights = emptyList(),
+            profiles = profileStore.list(),
+            profileDraftName = "",
+            currentBookHash = null,
         )
         scope.launch {
             try {
                 val opened = withContext(ioDispatcher) {
                     val staged = bookOpener.stage(copy)
-                    bookOpener.open(staged)
+                    bookOpener.open(staged, originKey = originKey)
                 }
                 current = opened
                 val viewerBook = ViewerBook.open(opened.bookDir, opened.sourceFile.path)
@@ -154,21 +210,34 @@ class ViewerController(
                 // models from.
                 val manifest = withContext(ioDispatcher) { manifestFor(opened.bookDir) }
                 searcher = manifest?.let { BookSearcher(opened.bookDir, it) }
+                val (bookmarks, highlights) = withContext(ioDispatcher) {
+                    annotationsStore.loadBookmarks(opened.bookHash) to
+                        annotationsStore.loadHighlights(opened.bookHash)
+                }
                 _state.value = _state.value.copy(
                     tocRows = TocRows.fromManifest(manifest?.get("toc") as? JsonObject),
                     viewedTocNodes = emptySet(),
                     tocVisible = false,
+                    bookmarks = bookmarks,
+                    highlights = highlights,
+                    currentBookHash = opened.bookHash,
                 )
                 if (bridge != null) {
-                    sendBookLoad(opened, lastReadStore.get(opened.bookHash))
+                    sendBookLoad(opened, lastReadStore.get(opened.bookHash), highlights)
                 }
                 // bridge == null: attachBridge re-sends the current book.
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable: an OutOfMemoryError on 2 GB devices while staging
+                // or rendering must surface as the friendly error overlay,
+                // not kill the process.
                 log("open book failed: $e")
                 awaitingBookDisplay = false
-                _state.value = _state.value.copy(preparing = false, errorMessage = friendlyError(e))
+                _state.value = _state.value.copy(
+                    preparing = false,
+                    errorMessage = friendlyError(e),
+                )
             }
         }
     }
@@ -198,6 +267,11 @@ class ViewerController(
         lastReadJob = null
         flushPosition()
         sessionStore.flush()
+        ratesStore.flush()
+        // Annotation/profile writes are queued off-thread; drain them too so
+        // a bookmark made seconds before backgrounding survives process death.
+        annotationsStore.flush()
+        profileStore.flush()
     }
 
     /** Render-process crash: the WebView stack is being rebuilt. */
@@ -216,10 +290,18 @@ class ViewerController(
     /**
      * WebPage.__init__ parity: seed a freshly built WebView with the
      * persisted font settings before any content loads. No signal — the
-     * initial layout picks the sizes up directly.
+     * initial layout picks the sizes up directly. Also migrates the
+     * legacy default base_font_size (16) to the new default (32) for
+     * installs upgrading from before the change.
      */
     fun applyPersistedFontSettings() {
-        hostUi.applyFontSettings(fontSettingsFromSessionData(sessionStore.sessionDataJson))
+        val migrated = migrateLegacyFontDefault(sessionStore.sessionDataJson)
+        if (migrated !== sessionStore.sessionDataJson) {
+            // Persist the migrated value so the in-page Font size chooser
+            // shows the new default too, not just the host engine.
+            sessionStore.setSessionData(JsonPrimitive("base_font_size"), JsonPrimitive(DEFAULT_BASE_FONT_SIZE))
+        }
+        hostUi.applyFontSettings(fontSettingsFromSessionData(migrated))
     }
 
     // ---- SignalEffects ------------------------------------------------------
@@ -256,7 +338,7 @@ class ViewerController(
             val pos = pendingPosition ?: return@launch
             pendingPosition = null
             withContext(ioDispatcher) {
-                lastReadStore.update(book.bookHash, pos.first, pos.second, book.sourceFile.path)
+                lastReadStore.update(book.bookHash, pos.first, pos.second, book.originKey)
             }
         }
     }
@@ -283,12 +365,7 @@ class ViewerController(
         val copy = lastCopy ?: return
         val hash = current?.bookHash
         if (hash != null) renderCache.evict(hash)
-        openBook(copy)
-    }
-
-    override fun toggleFullScreen() {
-        val immersive = hostUi.toggleImmersive()
-        bridge?.call("full_screen_state_changed", JsonPrimitive(immersive))
+        openBook(lastOriginKey, copy)
     }
 
     override fun toggleToc() {
@@ -340,6 +417,7 @@ class ViewerController(
         val discovery = searchDiscoveryCounter
         _state.value = _state.value.copy(
             searchResults = emptyList(), searching = true, currentResultNum = null,
+            searchError = null,
         )
         searchJob = scope.launch {
             var found = emptyList<SearchResult>()
@@ -375,9 +453,17 @@ class ViewerController(
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, not Exception: the pre-fix Matcher.results() call
+                // crashed 2 GB e-ink devices with a NoSuchMethodError (an
+                // Error) that sailed straight through catch(Exception). Any
+                // future Error must degrade to a panel message, not a crash.
                 log("search failed: $e")
-                _state.value = _state.value.copy(searchResults = found.toList(), searching = false)
+                _state.value = _state.value.copy(
+                    searchResults = found.toList(),
+                    searching = false,
+                    searchError = "搜索失败:${e.javaClass.simpleName}",
+                )
             }
         }
     }
@@ -425,7 +511,20 @@ class ViewerController(
         }
     }
 
-    override fun askForOpen() {
+    /**
+     * ask_for_open — null (the plain "Open book" button) launches the
+     * picker; a path (a recent-list click) opens that book directly. When
+     * the original source is gone (grant expired / file deleted) the stale
+     * entry is dropped from the page's recently-opened list via
+     * generic_action("remove-recently-opened") before the picker opens.
+     */
+    override fun askForOpen(path: String?) {
+        if (path == null) {
+            hostUi.pickBook()
+            return
+        }
+        if (hostUi.tryOpenRecent(path)) return
+        bridge?.genericAction("remove-recently-opened", buildJsonObject { put("path", path) })
         hostUi.pickBook()
     }
 
@@ -458,22 +557,339 @@ class ViewerController(
         hostUi.finishApp()
     }
 
+    // ---- M2: Highlights / Bookmarks / Profiles effects -----------------------
+
+    override fun toggleBookmarks() {
+        val s = _state.value
+        val visible = !s.bookmarksVisible
+        _state.value = s.copy(
+            bookmarksVisible = visible,
+            highlightsVisible = false,
+            profilesVisible = false,
+            searchVisible = false,
+            tocVisible = false,
+        )
+    }
+
+    override fun toggleHighlights() {
+        val s = _state.value
+        val visible = !s.highlightsVisible
+        _state.value = s.copy(
+            highlightsVisible = visible,
+            bookmarksVisible = false,
+            profilesVisible = false,
+            searchVisible = false,
+            tocVisible = false,
+        )
+    }
+
+    override fun toggleProfiles() {
+        val s = _state.value
+        val visible = !s.profilesVisible
+        _state.value = s.copy(
+            profilesVisible = visible,
+            bookmarksVisible = false,
+            highlightsVisible = false,
+            searchVisible = false,
+            tocVisible = false,
+            // Saved sets may have changed via the JS-side panel while we
+            // were closed; refresh on open so the list is never stale.
+            profiles = if (visible) profileStore.list() else s.profiles,
+        )
+    }
+
+    /**
+     * Viewer.js:50124 fires this from Ctrl+Alt+B with `{title?, cfi}`.
+     * If the page supplied a cfi, anchor the new bookmark there; otherwise
+     * fall back to the get_current_cfi round-trip so we never persist a
+     * bookmark with an empty position. Falls back to "Bookmark N" if no
+     * title is given.
+     */
+    override fun newBookmark(data: JsonObject?) {
+        val hash = _state.value.currentBookHash ?: return
+        val cfi = data?.stringPrimitive("cfi").orEmpty()
+        if (cfi.isEmpty()) {
+            bookmarkThisPage()
+            return
+        }
+        val title = data?.stringPrimitive("title")?.takeIf { it.isNotBlank() } ?: nextBookmarkTitle()
+        val record = BookmarkRecord(
+            timestamp = java.time.Instant.now().toString(),
+            pos = cfi,
+            title = title,
+        )
+        val updated = annotationsStore.loadBookmarks(hash) + record
+        annotationsStore.save(hash, updated, annotationsStore.loadHighlights(hash))
+        _state.value = _state.value.copy(bookmarks = updated)
+    }
+
+    private fun nextBookmarkTitle(): String {
+        val existing = _state.value.bookmarks
+        var n = existing.size + 1
+        while (existing.any { it.title == "Bookmark $n" }) n++
+        return "Bookmark $n"
+    }
+
+    /**
+     * Page pushes its full highlights array upward (viewer.js:50456-50467).
+     * The JS callsite is `to_python.highlights_changed(amap.highlight)` —
+     * args[0] is the array directly, NOT wrapped in a `{highlight: [...]}`.
+     * We rebuild the host list from it (tombstones for entries missing
+     * required fields) so the host store and the page's annotations_manager
+     * converge. After save, the panel automatically picks up state.highlights.
+     */
+    override fun highlightsChanged(map: JsonArray) {
+        val hash = _state.value.currentBookHash ?: return
+        val incoming = map.mapNotNull { parseHighlightFromPage(it) }
+        annotationsStore.save(hash, annotationsStore.loadBookmarks(hash), incoming)
+        _state.value = _state.value.copy(highlights = incoming)
+    }
+
+    private fun parseHighlightFromPage(el: JsonElement): HighlightRecord? {
+        val o = el as? JsonObject ?: return null
+        val uuid = o.stringPrimitive("uuid") ?: return null
+        val timestamp = o.stringPrimitive("timestamp") ?: return null
+        val startCfi = o.stringPrimitive("start_cfi") ?: return null
+        return HighlightRecord(
+            timestamp = timestamp,
+            uuid = uuid,
+            highlightedText = o.stringPrimitive("highlighted_text") ?: "",
+            startCfi = startCfi,
+            endCfi = o.stringPrimitive("end_cfi") ?: startCfi,
+            style = (o["style"] as? JsonObject) ?: JsonObject(emptyMap()),
+            spineName = o.stringPrimitive("spine_name") ?: "",
+            spineIndex = o.intPrimitive("spine_index") ?: 0,
+            notes = o.stringPrimitive("notes"),
+            tocFamilyTitles = (o["toc_family_titles"] as? JsonArray)?.mapNotNull {
+                (it as? JsonPrimitive)?.contentOrNull
+            }.orEmpty(),
+            removed = o.booleanPrimitive("removed"),
+        )
+    }
+
+    /**
+     * Profile RPC (viewer.js:49294 / 49303). The page sends:
+     *   "all-profiles"  → reply via bridge.profileResponse
+     *   "save-profile"  → settings===null deletes; otherwise persist
+     *   "apply-profile" → write each setting key into the session store
+     */
+    override fun profileOp(which: String, name: String, data: JsonObject?) {
+        when (which) {
+            "all-profiles" -> sendAllProfiles()
+            "save-profile" -> {
+                if (name.isBlank()) return
+                if (data == null) {
+                    profileStore.delete(name)
+                } else {
+                    profileStore.save(name, data)
+                }
+                _state.value = _state.value.copy(profiles = profileStore.list())
+                bridge?.profileResponse("save-profile", JsonPrimitive(""))
+            }
+            "apply-profile" -> applyProfile(name, data)
+            else -> log("unknown profile_op: $which")
+        }
+    }
+
+    private fun sendAllProfiles() {
+        // viewer.js:40683 (got_all_profiles) expects the FLAT {name: settings}
+        // map and adds the __default__ entry itself — wrapping it like the
+        // old code did made the JS panel render a bogus "profiles" item.
+        bridge?.profileResponse("all-profiles", JsonObject(profileStore.list()))
+    }
+
+    private fun applyProfile(name: String, data: JsonObject? = null) {
+        // The page may either name an existing profile (data == null → look it
+        // up) or pass the dict inline (data != null). Viewer.js always passes
+        // a dict, but the host-only profileApply path uses the stored form.
+        val settings = data ?: profileStore.get(name) ?: return
+        // Route through setSessionData so font-size changes trigger the
+        // engine re-apply + viewer_font_size_changed signal exactly the
+        // same way as a normal set_session_data signal would.
+        for ((k, v) in settings) {
+            setSessionData(JsonPrimitive(k), v)
+        }
+        // Tell the page to re-render with the new settings.
+        bridge?.profileResponse("apply-profile", settings)
+    }
+
+    // ---- M2: panel row clicks (host → JS) -----------------------------------
+
+    /** BookmarksPanel row tap → navigate via goto_cfi. */
+    fun bookmarkClick(pos: String) {
+        _state.value = _state.value.copy(bookmarksVisible = false)
+        bridge?.executeWhenReady("goto_cfi", JsonPrimitive(pos), JsonPrimitive(true))
+    }
+
+    /**
+     * Compose "Bookmark this page" button → asks the page for the current
+     * CFI via get_current_cfi; report_cfi replies through onSignal. We
+     * tag the request with an id so concurrent calls don't cross.
+     */
+    fun bookmarkThisPage() {
+        val id = java.util.UUID.randomUUID().toString()
+        pendingCfiRequests[id] = { cfi -> persistBookmarkAt(cfi) }
+        bridge?.getCurrentCfi(id)
+    }
+
+    override fun reportCfi(requestId: String, data: JsonObject) {
+        if (requestId.isEmpty()) return
+        val handler = pendingCfiRequests.remove(requestId) ?: return
+        val cfi = data.stringPrimitive("cfi") ?: return
+        if (cfi.isNotEmpty()) handler(cfi)
+    }
+
+    private val pendingCfiRequests = HashMap<String, (String) -> Unit>()
+
+    private fun persistBookmarkAt(cfi: String) {
+        val hash = _state.value.currentBookHash ?: return
+        val title = nextBookmarkTitle()
+        val record = BookmarkRecord(
+            timestamp = java.time.Instant.now().toString(),
+            pos = cfi,
+            title = title,
+        )
+        val updated = annotationsStore.loadBookmarks(hash) + record
+        annotationsStore.save(hash, updated, annotationsStore.loadHighlights(hash))
+        _state.value = _state.value.copy(bookmarks = updated)
+    }
+
+    /**
+     * HighlightsPanel row tap → use highlight_action(uuid, "goto") — the
+     * JS AnnotationsManager already knows the highlight's CFIs.
+     */
+    fun highlightClick(uuid: String) {
+        _state.value = _state.value.copy(highlightsVisible = false)
+        bridge?.highlightAction(uuid, "goto")
+    }
+
+    /** ProfilesPanel "save current as profile" → persist, no JS round-trip. */
+    fun profileSave(name: String) {
+        if (name.isBlank()) return
+        // Snapshot the live session into a profile dict. We use the same
+        // session keys the JS settings_for_reader_profile would capture —
+        // for now we record all of sessionData verbatim (the user can
+        // trim later).
+        profileStore.save(name, sessionStore.sessionDataJson)
+        _state.value = _state.value.copy(profiles = profileStore.list(), profileDraftName = "")
+    }
+
+    fun profileApply(name: String) = applyProfile(name)
+
+    /**
+     * ProfilesPanel "恢复默认设置" — profile_response("apply-profile", {})
+     * is the JS-side "Restore settings to default values" path
+     * (viewer.js:49337): apply_reader_profile with an empty dict resets
+     * every read_book-category setting to its default, re-renders the page
+     * and reports the (now default) values back through set_session_data,
+     * which the host session store already persists.
+     */
+    fun profileResetDefaults() {
+        _state.value = _state.value.copy(profilesVisible = false)
+        bridge?.profileResponse("apply-profile", JsonObject(emptyMap()))
+    }
+
+    fun profileDelete(name: String) {
+        profileStore.delete(name)
+        _state.value = _state.value.copy(profiles = profileStore.list())
+    }
+
+    fun setProfileDraftName(name: String) {
+        _state.value = _state.value.copy(profileDraftName = name)
+    }
+
+    /** Close any of the three native panels (toolbar / back key / outside tap). */
+    fun dismissPanels() {
+        val s = _state.value
+        if (s.bookmarksVisible || s.highlightsVisible || s.profilesVisible) {
+            _state.value = s.copy(
+                bookmarksVisible = false,
+                highlightsVisible = false,
+                profilesVisible = false,
+            )
+        }
+    }
+
+    // ---- M2: reading statistics ---------------------------------------------
+
+    /** update_reading_rates — persist the page's {rates, chapter_times}. */
+    override fun updateReadingRates(payload: JsonObject) {
+        val hash = current?.bookHash ?: return
+        ratesStore.update(hash, payload)
+    }
+
+    /** reset_reading_rates — the stats overlay's reset; clear the stored set. */
+    override fun resetReadingRates() {
+        val hash = current?.bookHash ?: return
+        ratesStore.reset(hash)
+    }
+
     // ---- helpers ------------------------------------------------------------
+
+    /**
+     * Gate the desktop controls-help (welcome) overlay off for good: the
+     * page shows it while controls_help_shown_count < 2 — with an
+     * _rtl_page_progression variant key (viewer.js display_book). Seed 2
+     * for both keys when the user has no stored value; a plain JSON number,
+     * the exact shape the page itself stores, so SessionData's per-key
+     * merge carries it. Not persisted here — re-merged per create_view,
+     * idempotent.
+     */
+    private fun seededSessionData(): JsonObject {
+        val current = sessionStore.sessionDataJson
+        if (CONTROLS_HELP_KEY in current && CONTROLS_HELP_RTL_KEY in current) return current
+        return JsonObject(
+            current + mapOf(
+                CONTROLS_HELP_KEY to JsonPrimitive(2),
+                CONTROLS_HELP_RTL_KEY to JsonPrimitive(2),
+            )
+        )
+    }
 
     private fun flushPosition() {
         val book = current ?: return
         val pos = pendingPosition ?: return
         pendingPosition = null
-        lastReadStore.update(book.bookHash, pos.first, pos.second, book.sourceFile.path)
+        lastReadStore.update(book.bookHash, pos.first, pos.second, book.originKey)
     }
 
-    private fun sendBookLoad(book: BookOpener.OpenedBook, saved: LastReadStore.LastReadPosition?) {
+    private fun sendBookLoad(
+        book: BookOpener.OpenedBook,
+        saved: LastReadStore.LastReadPosition?,
+        highlights: List<HighlightRecord> = emptyList(),
+    ) {
         awaitingBookDisplay = true
         bridge?.startBookLoad(
             renderedBookDir = book.bookDir.path,
             initialPosition = saved?.cfi?.let { cfiToPosition(it) },
-            pathtoebook = book.sourceFile.path,
+            // The origin key (SAF URI), not the staged path: viewer.js only
+            // uses pathtoebook as an opaque recents key, so one entry per
+            // source book accumulates and ask_for_open can reopen it.
+            pathtoebook = book.originKey,
+            highlights = buildJsonArray {
+                for (h in highlights) add(highlightToForJs(h))
+            },
+            // Timers.start_book copies these back in-memory so the reading
+            // statistics overlay survives restarts (used to be "Calculating…").
+            readingRates = ratesStore.get(book.bookHash),
         )
+    }
+
+    /** host highlight record → JSON shape viewer.js expects in start_book_load's
+     *  `highlights` arg (mirror of what the JS AnnotationsManager builds:
+     *  viewer.js:15815-15842, minus "type":"highlight" which JS adds). */
+    private fun highlightToForJs(h: HighlightRecord): JsonObject = buildJsonObject {
+        put("uuid", h.uuid)
+        put("timestamp", h.timestamp)
+        put("highlighted_text", h.highlightedText)
+        put("start_cfi", h.startCfi)
+        put("end_cfi", h.endCfi)
+        put("style", h.style)
+        put("spine_name", h.spineName)
+        put("spine_index", h.spineIndex)
+        h.notes?.let { put("notes", it) }
+        if (h.tocFamilyTitles.isNotEmpty()) put("toc_family_titles", JsonArray(h.tocFamilyTitles.map { JsonPrimitive(it) }))
+        if (h.removed) put("removed", true)
     }
 
     private fun cfiToPosition(cfi: String): JsonObject = buildJsonObject {
@@ -481,7 +897,7 @@ class ViewerController(
         put("data", cfi)
     }
 
-    private fun friendlyError(e: Exception): String = when (e) {
+    private fun friendlyError(e: Throwable): String = when (e) {
         is InvalidBookException -> e.message ?: "Invalid book"
         is ZipException -> "不是有效的 EPUB 文件（无法解压）"
         is FileNotFoundException -> "找不到书籍文件"
@@ -491,5 +907,19 @@ class ViewerController(
 
     private companion object {
         const val LAST_READ_DEBOUNCE_MS = 2_000L
+
+        /** Session keys gating the desktop welcome overlay (viewer.js). */
+        const val CONTROLS_HELP_KEY = "controls_help_shown_count"
+        const val CONTROLS_HELP_RTL_KEY = "controls_help_shown_count_rtl_page_progression"
     }
 }
+
+// ---- JSON helpers (local to this file — small enough to inline) ----------
+private fun JsonObject.stringPrimitive(key: String): String? =
+    (this[key] as? JsonPrimitive)?.contentOrNull
+
+private fun JsonObject.intPrimitive(key: String): Int? =
+    (this[key] as? JsonPrimitive)?.intOrNull
+
+private fun JsonObject.booleanPrimitive(key: String): Boolean =
+    (this[key] as? JsonPrimitive)?.contentOrNull == "true"

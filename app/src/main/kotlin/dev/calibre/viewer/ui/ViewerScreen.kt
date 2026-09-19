@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.calibre.viewer.host.SearchMode
 import dev.calibre.viewer.host.ViewerUiState
+import dev.calibre.viewer.ui.scaled
 
 @Composable
 fun ViewerScreen(
@@ -43,6 +44,14 @@ fun ViewerScreen(
     onSearchStep: (backwards: Boolean) -> Unit = {},
     onSearchResultClick: (resultNum: Long) -> Unit = {},
     onDismissSearch: () -> Unit = {},
+    onBookmarkClick: (String) -> Unit = {},
+    onHighlightClick: (String) -> Unit = {},
+    onSaveProfile: (String) -> Unit = {},
+    onApplyProfile: (String) -> Unit = {},
+    onDeleteProfile: (String) -> Unit = {},
+    onResetProfileDefaults: () -> Unit = {},
+    onProfileDraftChange: (String) -> Unit = {},
+    onDismissPanels: () -> Unit = {},
 ) {
     if (state.tocVisible) {
         TocPanel(
@@ -57,11 +66,38 @@ fun ViewerScreen(
             prefill = state.searchPrefill,
             results = state.searchResults,
             searching = state.searching,
+            searchError = state.searchError,
             currentResultNum = state.currentResultNum,
             onSearch = onSearch,
             onStep = onSearchStep,
             onResultClick = onSearchResultClick,
             onDismiss = onDismissSearch,
+        )
+    }
+    if (state.bookmarksVisible) {
+        BookmarksPanel(
+            bookmarks = state.bookmarks,
+            onBookmarkClick = onBookmarkClick,
+            onDismiss = onDismissPanels,
+        )
+    }
+    if (state.highlightsVisible) {
+        HighlightsPanel(
+            highlights = state.highlights,
+            onHighlightClick = onHighlightClick,
+            onDismiss = onDismissPanels,
+        )
+    }
+    if (state.profilesVisible) {
+        ProfilesPanel(
+            profiles = state.profiles,
+            draftName = state.profileDraftName,
+            onDraftNameChange = onProfileDraftChange,
+            onSave = onSaveProfile,
+            onApply = onApplyProfile,
+            onDelete = onDeleteProfile,
+            onResetDefaults = onResetProfileDefaults,
+            onDismiss = onDismissPanels,
         )
     }
     if (state.preparing) {
@@ -87,7 +123,7 @@ private fun OverlayLabel(text: AnnotatedString) {
         Text(
             text = text,
             color = Color.Black,
-            fontSize = 16.sp,
+            fontSize = 16.sp.scaled,
         )
     }
 }
@@ -98,18 +134,18 @@ private fun ErrorOverlay(message: String, onDismiss: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
-            .padding(24.dp),
+            .padding(24.dp.scaled),
     ) {
         Column(
             modifier = Modifier.align(Alignment.Center),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp.scaled),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
                 text = richTextOf(message),
                 color = Color.Black,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
+                fontSize = 14.sp.scaled,
+                lineHeight = 20.sp.scaled,
             )
             Row {
                 Button(

@@ -1,9 +1,10 @@
 // License: GPLv3 Copyright: 2026 ebook-viewer-android contributors
 //
 // fontSettingsFromSessionData mirrors web_view.py:apply_font_settings —
-// the arithmetic (fixed = base*13/16, defaults 16/13/0) and the standalone
-// viewer's trigger rule (only SIZE changes owe a relayout signal) must hold
-// exactly, or the font-size panel silently stops working.
+// the arithmetic (fixed = base*13/16, defaults 32/26/0 matching the
+// JS-side base_font_size default) and the standalone viewer's trigger rule
+// (only SIZE changes owe a relayout signal) must hold exactly, or the
+// font-size panel silently stops working.
 
 package dev.calibre.viewer.host
 
@@ -27,8 +28,8 @@ class FontSettingsTest {
         assertNull(s.monoFamily)
         assertEquals(StandardFontFamily.SERIF, s.standard)
         assertEquals(0, s.minimumFontSize)
-        assertEquals(16, s.defaultFontSize)
-        assertEquals(13, s.fixedFontSize)
+        assertEquals(32, s.defaultFontSize)
+        assertEquals(32 * 13 / 16, s.fixedFontSize)
     }
 
     @Test
@@ -49,8 +50,8 @@ class FontSettingsTest {
     @Test
     fun `float and garbage sizes fall back safely`() {
         assertEquals(18, fontSettingsFromSessionData(parse("""{"base_font_size":18.0}""")).defaultFontSize)
-        assertEquals(16, fontSettingsFromSessionData(parse("""{"base_font_size":"big"}""")).defaultFontSize)
-        assertEquals(16, fontSettingsFromSessionData(parse("""{"base_font_size":null}""")).defaultFontSize)
+        assertEquals(32, fontSettingsFromSessionData(parse("""{"base_font_size":"big"}""")).defaultFontSize)
+        assertEquals(32, fontSettingsFromSessionData(parse("""{"base_font_size":null}""")).defaultFontSize)
     }
 
     @Test

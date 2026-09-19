@@ -22,6 +22,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Debug-keystore signing so release APKs install directly on
+            // devices (no upload/play signing pipeline for this port).
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

@@ -13,6 +13,13 @@
 //    matching is dropped; plain Unicode case folding remains)
 //  - no search-history persistence (vprefs) — the panel keeps the last
 //    query for the session
+//  - results are capped (MAX_SEARCH_RESULTS) and the per-chapter text
+//    cache is a bounded LRU — the 2 GB e-ink devices this ships on OOM
+//    long before a desktop would
+//  - Matcher.results() is never used: it is API 34+ while minSdk is 26,
+//    and the NoSuchMethodError it throws on older firmware is an Error
+//    that sails through catch(Exception) — the loop form below is the
+//    API-26-compatible equivalent
 
 package dev.calibre.viewer.host
 
@@ -101,9 +108,16 @@ private fun Regex.splitKeeping(text: String): List<String> {
     return out
 }
 
-/** REGEX_FLAGS = MULTILINE | UNICODE (+ case folding when insensitive). */
+/**
+ * REGEX_FLAGS = MULTILINE | UNICODE_CASE (+ case folding when insensitive).
+ * Android's java.util.regex.Pattern (ICU-based) rejects UNICODE_CHARACTER_CLASS
+ * when combined with UNICODE_CASE — see issue: logcat IllegalArgumentException
+ * from search failures on real devices. The default Java character class
+ * semantics is sufficient for our text — we only match Unicode codepoints as
+ * opaque units.
+ */
 private fun patternFlags(caseSensitive: Boolean, dotAll: Boolean = false): Int {
-    var flags = Pattern.MULTILINE or Pattern.UNICODE_CHARACTER_CLASS or Pattern.UNICODE_CASE
+    var flags = Pattern.MULTILINE or Pattern.UNICODE_CASE
     if (!caseSensitive) flags = flags or Pattern.CASE_INSENSITIVE
     if (dotAll) flags = flags or Pattern.DOTALL
     return flags
@@ -321,7 +335,13 @@ class BookSearcher(private val bookDir: File, manifest: JsonObject) {
     private val spineIdxMap: Map<String, Int> = spine.withIndex().associate { it.value to it.index }
     private val nodesById: Map<Long, JsonObject>
 
-    private val textCache = HashMap<String, SearchableText>()
+    // Bounded access-ordered LRU: whole-book caching pushed 2 GB devices
+    // into OOM during search; the working set only needs the chapters
+    // around the current spine position (plus one per result jump).
+    private val textCache = object : LinkedHashMap<String, SearchableText>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SearchableText>): Boolean =
+            size > TEXT_CACHE_CHAPTERS
+    }
 
     init {
         val toc = manifest["toc"] as? JsonObject
@@ -353,17 +373,27 @@ class BookSearcher(private val bookDir: File, manifest: JsonObject) {
 
     /** search.py:search_in_name — (before, text, after, offset) per match. */
     internal fun searchInName(raw: String, query: SearchQuery, ctxSize: Int = 75): List<Match4> {
-        val spans: List<IntRange> = when {
+        // while(find()) instead of Matcher.results() (API 34+; see the file
+        // header) — and the cap breaks out of the loop itself so a
+        // pathological query over a huge chapter stops at the limit instead
+        // of materialising every span first.
+        val spans = ArrayList<IntRange>(32)
+        when {
             query.mode == SearchMode.NEAR -> {
                 val (wordPats, fullPat) = query.nearSearchData
-                fullPat.matcher(raw).results()
-                    .filter { m -> wordPats.all { it.matcher(m.group()).find() } }
-                    .map { m -> m.start() until m.end() }
-                    .toList()
+                val m = fullPat.matcher(raw)
+                while (spans.size < MAX_SEARCH_RESULTS && m.find()) {
+                    if (wordPats.all { it.matcher(m.group()).find() }) {
+                        spans.add(m.start() until m.end())
+                    }
+                }
             }
-            else -> query.regex.matcher(raw).results()
-                .map { m -> m.start() until m.end() }
-                .toList()
+            else -> {
+                val m = query.regex.matcher(raw)
+                while (spans.size < MAX_SEARCH_RESULTS && m.find()) {
+                    spans.add(m.start() until m.end())
+                }
+            }
         }
         return spans.map { r ->
             val start = r.first
@@ -387,6 +417,7 @@ class BookSearcher(private val bookDir: File, manifest: JsonObject) {
         if (spineIdx < 0 || spine.isEmpty()) return false
         var resultNum = 0L
         for (n in spine.indices) {
+            if (resultNum >= MAX_SEARCH_RESULTS) break // global cap: stop scanning chapters
             val idx = (spineIdx + n) % spine.size
             val name = spine[idx]
             val text = searchableTextFor(name) ?: continue
@@ -467,6 +498,14 @@ class BookSearcher(private val bookDir: File, manifest: JsonObject) {
     }
 
     internal data class Match4(val before: String, val text: String, val after: String, val offset: Int)
+
+    companion object {
+        /** Upper bound on matches per chapter and per whole-book search. */
+        internal const val MAX_SEARCH_RESULTS = 500
+
+        /** Flattened chapters kept in the LRU text cache. */
+        internal const val TEXT_CACHE_CHAPTERS = 6
+    }
 }
 
 private fun JsonObject.strOrNull(key: String): String? =

@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.calibre.viewer.host.SearchMode
 import dev.calibre.viewer.host.SearchResult
+import dev.calibre.viewer.ui.scaled
 
 private val MODE_LABELS = linkedMapOf(
     SearchMode.NORMAL to "包含",
@@ -63,6 +64,7 @@ fun SearchPanel(
     prefill: String,
     results: List<SearchResult>,
     searching: Boolean,
+    searchError: String?,
     currentResultNum: Long?,
     onSearch: (text: String, mode: SearchMode, caseSensitive: Boolean) -> Unit,
     onStep: (backwards: Boolean) -> Unit,
@@ -77,21 +79,30 @@ fun SearchPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { onDismiss() } },
+            .pointerInput(Unit) {
+                // The panel absorbs all taps outside the sidebar area.
+                // Inside the sidebar, the inner Column's pointerInput wins
+                // first (children are dispatched before parents), so taps
+                // on the search button / results never reach this handler.
+                detectTapGestures { onDismiss() }
+            },
     ) {
         Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
-                .width(320.dp)
+                .fillMaxWidth(2f / 3f)
                 .background(Color.White)
-                .border(1.dp, Color.Black)
+                .border(1.dp.scaled, Color.Black)
+                // Consume taps on the panel body so the outer Box's
+                // dismiss-on-blank-tap never fires from inside the panel;
+                // children with their own click handlers still receive events.
                 .pointerInput(Unit) { detectTapGestures { } },
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -100,15 +111,15 @@ fun SearchPanel(
                         results.isEmpty() -> "搜索"
                         else -> "${results.size} 个结果"
                     },
-                    fontSize = 16.sp,
+                    fontSize = 16.sp.scaled,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
                     "✕",
-                    fontSize = 18.sp,
+                    fontSize = 18.sp.scaled,
                     modifier = Modifier
-                        .padding(start = 12.dp)
+                        .padding(start = 12.dp.scaled)
                         .clickable { onDismiss() },
                 )
             }
@@ -117,30 +128,30 @@ fun SearchPanel(
                 value = query,
                 onValueChange = { query = it },
                 singleLine = true,
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Color.Black),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp.scaled, color = Color.Black),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = 12.dp.scaled),
             )
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp.scaled, vertical = 6.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box {
                     Text(
                         MODE_LABELS.getValue(mode),
-                        fontSize = 13.sp,
+                        fontSize = 13.sp.scaled,
                         modifier = Modifier
                             .clickable { modeMenuOpen = true }
-                            .padding(vertical = 6.dp),
+                            .padding(vertical = 6.dp.scaled),
                     )
                     DropdownMenu(expanded = modeMenuOpen, onDismissRequest = { modeMenuOpen = false }) {
                         MODE_LABELS.forEach { (m, label) ->
                             DropdownMenuItem(
-                                text = { Text(label) },
+                                text = { Text(label, fontSize = 14.sp.scaled) },
                                 onClick = {
                                     mode = m
                                     modeMenuOpen = false
@@ -151,8 +162,8 @@ fun SearchPanel(
                 }
                 Text(
                     "区分大小写",
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(start = 4.dp),
+                    fontSize = 13.sp.scaled,
+                    modifier = Modifier.padding(start = 4.dp.scaled),
                 )
                 Checkbox(
                     checked = caseSensitive,
@@ -161,17 +172,17 @@ fun SearchPanel(
                 Box(modifier = Modifier.weight(1f))
                 Text(
                     "‹",
-                    fontSize = 20.sp,
+                    fontSize = 20.sp.scaled,
                     modifier = Modifier
                         .clickable(enabled = results.isNotEmpty()) { onStep(true) }
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 6.dp.scaled),
                 )
                 Text(
                     "›",
-                    fontSize = 20.sp,
+                    fontSize = 20.sp.scaled,
                     modifier = Modifier
                         .clickable(enabled = results.isNotEmpty()) { onStep(false) }
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 6.dp.scaled),
                 )
             }
 
@@ -179,17 +190,22 @@ fun SearchPanel(
                 onClick = { onSearch(query, mode, caseSensitive) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = 12.dp.scaled),
             ) {
-                Text("搜索", color = Color.Black)
+                Text("搜索", color = Color.Black, fontSize = 15.sp.scaled)
             }
 
             if (results.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (searching) "搜索中…" else if (query.isBlank()) "输入要搜索的内容" else "无匹配结果",
+                        when {
+                            searching -> "搜索中…"
+                            searchError != null -> searchError
+                            query.isBlank() -> "输入要搜索的内容"
+                            else -> "无匹配结果"
+                        },
                         color = Color.Black,
-                        fontSize = 14.sp,
+                        fontSize = 14.sp.scaled,
                     )
                 }
             } else {
@@ -205,13 +221,13 @@ fun SearchPanel(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onResultClick(result.resultNum) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                .padding(horizontal = 12.dp.scaled, vertical = 6.dp.scaled),
                         ) {
                             val isCurrent = result.resultNum == currentResultNum
                             if (isCurrent) {
                                 Text(
                                     result.tocTitles.lastOrNull() ?: result.fileName,
-                                    fontSize = 11.sp,
+                                    fontSize = 11.sp.scaled,
                                     color = Color.DarkGray,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -219,7 +235,7 @@ fun SearchPanel(
                             }
                             Text(
                                 snippet(result),
-                                fontSize = 14.sp,
+                                fontSize = 14.sp.scaled,
                                 color = if (result.isHidden) Color.Gray else Color.Black,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,

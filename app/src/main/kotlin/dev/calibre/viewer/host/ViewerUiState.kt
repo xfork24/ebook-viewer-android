@@ -6,6 +6,10 @@
 
 package dev.calibre.viewer.host
 
+import dev.calibre.viewer.core.annot.BookmarkRecord
+import dev.calibre.viewer.core.annot.HighlightRecord
+import kotlinx.serialization.json.JsonObject
+
 data class ViewerUiState(
     /** Book pipeline (extract → transform → render) in progress. */
     val preparing: Boolean = false,
@@ -29,8 +33,32 @@ data class ViewerUiState(
     val searchResults: List<SearchResult> = emptyList(),
     /** A search is running (results still streaming in). */
     val searching: Boolean = false,
+    /** Why the last search failed (Throwable escaped the pipeline); null when fine. */
+    val searchError: String? = null,
     /** result_num of the selection, from discovery or a panel click. */
     val currentResultNum: Long? = null,
     /** The spine file currently displayed (content_file_changed payload). */
     val currentName: String? = null,
+
+    // ---- M2: Highlights / Bookmarks / Profiles --------------------
+
+    /** BookmarksPanel visibility. */
+    val bookmarksVisible: Boolean = false,
+    /** HighlightsPanel visibility. */
+    val highlightsVisible: Boolean = false,
+    /** ProfilesPanel visibility. */
+    val profilesVisible: Boolean = false,
+
+    /** Per-book bookmark records, loaded from AnnotationsStore on openBook. */
+    val bookmarks: List<BookmarkRecord> = emptyList(),
+    /** Per-book highlight records, loaded from AnnotationsStore on openBook. */
+    val highlights: List<HighlightRecord> = emptyList(),
+
+    /** Saved profiles (global, not per-book). */
+    val profiles: Map<String, JsonObject> = emptyMap(),
+    /** In-flight input field value for the profiles panel's "save as" row. */
+    val profileDraftName: String = "",
+
+    /** The book hash whose annotations are loaded into [bookmarks] / [highlights]. */
+    val currentBookHash: String? = null,
 )

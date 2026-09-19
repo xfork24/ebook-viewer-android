@@ -52,8 +52,12 @@ private val FONT_KEYS = setOf("standalone_font_settings", "base_font_size")
 private const val MIN_BASE_FONT_SIZE = 8
 private const val MAX_BASE_FONT_SIZE = 64
 
-/** The engine's defaults when session data says nothing (Chromium's). */
-private const val DEFAULT_BASE_FONT_SIZE = 16
+/** The engine's defaults when session data says nothing (Chromium's).
+ *  Bumped from 16 → 32 to match the JS-side default (base_font_size 32 in
+ *  standalone_font_settings) — viewer.js clamps and the host mirror keeps
+ *  the WebView's default font size in sync with what the in-page Font size
+ *  chooser reports. */
+internal const val DEFAULT_BASE_FONT_SIZE = 32
 
 private const val MAX_FAMILY_LENGTH = 128
 
@@ -74,6 +78,23 @@ fun fontSettingsFromSessionData(sessionData: JsonObject): FontSettings {
         defaultFontSize = base,
         fixedFontSize = base * 13 / 16,
     )
+}
+
+/**
+ * Migrate a previously-installed user's persisted base_font_size=16 (the old
+ * host default) over to the new default (32). Without this, an upgrade
+ * leaves existing installs stuck at 16 because session data already has the
+ * key. We only rewrite when the value is exactly the legacy default AND the
+ * user has never touched the Font size panel — anything else means the user
+ * chose it deliberately, leave it alone.
+ */
+private const val LEGACY_DEFAULT_BASE_FONT_SIZE = 16
+fun migrateLegacyFontDefault(sessionData: JsonObject): JsonObject {
+    val current = sessionData["base_font_size"].asIntOrNull() ?: return sessionData
+    if (current != LEGACY_DEFAULT_BASE_FONT_SIZE) return sessionData
+    val merged = sessionData.toMutableMap()
+    merged["base_font_size"] = JsonPrimitive(DEFAULT_BASE_FONT_SIZE)
+    return JsonObject(merged)
 }
 
 /** web_view.py's fonts_changed: did this payload touch any font key? */

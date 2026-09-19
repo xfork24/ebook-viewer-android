@@ -28,6 +28,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.xmlpull.v1.XmlPullParserFactory
 
@@ -48,7 +49,9 @@ class ViewerHostTest {
 
     private class FakeHostUi : HostUi {
         val events = mutableListOf<String>()
-        var immersiveResult = true
+
+        /** What tryOpenRecent answers; recents tests flip this. */
+        var tryOpenRecentResult = false
 
         /** The engine's font knobs as last applied (starts at Chromium defaults). */
         var currentFonts: FontSettings =
@@ -63,9 +66,9 @@ class ViewerHostTest {
             events.add("finish")
         }
 
-        override fun toggleImmersive(): Boolean {
-            events.add("toggleImmersive")
-            return immersiveResult
+        override fun tryOpenRecent(path: String): Boolean {
+            events.add("tryOpenRecent:$path")
+            return tryOpenRecentResult
         }
 
         override fun applyFontSettings(settings: FontSettings): Boolean {
@@ -247,6 +250,9 @@ class ViewerHostTest {
         val hostUi = FakeHostUi()
         val controller = newController(root, js, hostUi)
         bringBridgeUp(controller, js)
+        // MainActivity seeds the engine from persisted settings at startup;
+        // without this the first font signal owes a (size) relayout signal.
+        controller.applyPersistedFontSettings()
 
         val families = kotlinx.serialization.json.Json.parseToJsonElement(
             """{"serif_family":"Liberation Serif","standard_font":"serif"}""",
@@ -272,7 +278,7 @@ class ViewerHostTest {
 
         controller.onSignal("set_session_data", listOf(JsonPrimitive("*"), kotlinx.serialization.json.JsonNull))
 
-        assertEquals(16, hostUi.currentFonts.defaultFontSize)
+        assertEquals(32, hostUi.currentFonts.defaultFontSize)
         assertTrue(js.fromPythonCalls().any { "viewer_font_size_changed" in it })
     }
 
@@ -489,9 +495,13 @@ class ViewerHostTest {
         controller.onSignal("quit", emptyList())
         assertEquals("finish", hostUi.events.last())
 
+        // toggle_full_screen is a deliberate no-op now (the toolbar item is
+        // patched out; the name stays registered so the page can't TypeError).
+        val eventsBefore = hostUi.events.size
+        val callsBefore = js.fromPythonCalls().size
         controller.onSignal("toggle_full_screen", emptyList())
-        assertEquals("toggleImmersive", hostUi.events.last())
-        assertTrue(js.fromPythonCalls().any { "full_screen_state_changed" in it && "true" in it })
+        assertEquals(eventsBefore, hostUi.events.size)
+        assertEquals(callsBefore, js.fromPythonCalls().size)
 
         controller.dismissError()
         assertNull(controller.state.value.errorMessage)
@@ -565,6 +575,26 @@ class ViewerHostTest {
             "update_last_read_position",
             listOf(JsonPrimitive("epubcfi(/6/8)"), JsonPrimitive(0.5)),
         )
+        // Stored highlights must ride along too: seeded empty, the page's
+        // next highlights_changed would REPLACE the host list and wipe them.
+        controller.onSignal(
+            "highlights_changed",
+            listOf(
+                kotlinx.serialization.json.buildJsonArray {
+                    add(
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("uuid", JsonPrimitive("uuid-keep"))
+                            put("timestamp", JsonPrimitive("2026-09-19T00:00:00Z"))
+                            put("highlighted_text", JsonPrimitive("kept"))
+                            put("start_cfi", JsonPrimitive("epubcfi(/6/4)"))
+                            put("end_cfi", JsonPrimitive("epubcfi(/6/4!/re)"))
+                            put("spine_name", JsonPrimitive("ch1.html"))
+                            put("spine_index", JsonPrimitive(0))
+                        },
+                    )
+                },
+            ),
+        )
         controller.persistNow()
 
         val js2 = FakeJs()
@@ -577,6 +607,8 @@ class ViewerHostTest {
         val load = calls.single { "start_book_load" in it }
         // The latest saved position is the recovery point.
         assertTrue("""{"type":"cfi","data":"epubcfi(/6/8)"}""" in load, load)
+        // And the stored highlight is re-seeded into the rebuilt page.
+        assertTrue("uuid-keep" in load, load)
     }
 
     // ---- staging fingerprint ---------------------------------------------------
@@ -616,6 +648,202 @@ class ViewerHostTest {
         val replaced = opener.stage { dest -> dest.writeBytes(minimalEpub("v2")) }
         val opened3 = opener.open(replaced)
         assertTrue(opened3.bookHash != opened1.bookHash)
+    }
+
+    // ---- M2: Highlights / Bookmarks / Profiles -----------------------
+
+    @Test
+    fun `toggle_highlights opens panel and rows navigate via highlight_action`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        controller.openBook { dest -> dest.writeBytes(minimalEpub()) }
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+
+        // Inject 2 highlights via the page signal path (highlights_changed).
+        // JS callsite: to_python.highlights_changed(amap.highlight) — the
+        // array is passed directly as args[0], not wrapped in a dict.
+        val highlightsArr = kotlinx.serialization.json.buildJsonArray {
+            add(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("uuid", JsonPrimitive("uuid-a"))
+                    put("timestamp", JsonPrimitive("2026-09-19T00:00:00Z"))
+                    put("highlighted_text", JsonPrimitive("Hello"))
+                    put("start_cfi", JsonPrimitive("epubcfi(/6/2)"))
+                    put("end_cfi", JsonPrimitive("epubcfi(/6/2!/re)"))
+                    put("spine_name", JsonPrimitive("ch1.html"))
+                    put("spine_index", JsonPrimitive(0))
+                },
+            )
+            add(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("uuid", JsonPrimitive("uuid-b"))
+                    put("timestamp", JsonPrimitive("2026-09-19T00:01:00Z"))
+                    put("highlighted_text", JsonPrimitive("World"))
+                    put("start_cfi", JsonPrimitive("epubcfi(/6/4)"))
+                    put("end_cfi", JsonPrimitive("epubcfi(/6/4!/re)"))
+                    put("spine_name", JsonPrimitive("ch1.html"))
+                    put("spine_index", JsonPrimitive(0))
+                },
+            )
+        }
+        controller.onSignal("highlights_changed", listOf(highlightsArr))
+        assertEquals(2, controller.state.value.highlights.size)
+
+        // Toolbar → toggle_highlights opens panel.
+        controller.onSignal("toggle_highlights", emptyList())
+        assertTrue(controller.state.value.highlightsVisible)
+        assertEquals(2, controller.state.value.highlights.size)
+
+        // Row click → host→JS highlight_action(uuid, "goto").
+        js.calls.clear()
+        controller.highlightClick("uuid-b")
+        assertFalse(controller.state.value.highlightsVisible)
+        val nav = js.fromPythonCalls().single()
+        assertTrue("\"highlight_action\"" in nav && "uuid-b" in nav && "\"goto\"" in nav, nav)
+    }
+
+    @Test
+    fun `toggle_bookmarks opens panel and new_bookmark persists`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        controller.openBook { dest -> dest.writeBytes(minimalEpub()) }
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+
+        // Toolbar → toggle_bookmarks opens an empty panel.
+        controller.onSignal("toggle_bookmarks", emptyList())
+        assertTrue(controller.state.value.bookmarksVisible)
+        assertEquals(0, controller.state.value.bookmarks.size)
+
+        // Ctrl+Alt+B path with a cfi payload.
+        controller.onSignal(
+            "new_bookmark",
+            listOf(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("cfi", JsonPrimitive("epubcfi(/6/4!)"))
+                    put("title", JsonPrimitive("Chapter 1"))
+                },
+            ),
+        )
+        assertEquals(1, controller.state.value.bookmarks.size)
+        assertEquals("Chapter 1", controller.state.value.bookmarks.single().title)
+        assertEquals("epubcfi(/6/4!)", controller.state.value.bookmarks.single().pos)
+
+        // Row click → host→JS goto_cfi.
+        js.calls.clear()
+        controller.bookmarkClick("epubcfi(/6/4!)")
+        assertFalse(controller.state.value.bookmarksVisible)
+        val nav = js.fromPythonCalls().single()
+        assertTrue("\"goto_cfi\"" in nav && "epubcfi(/6/4!)" in nav, nav)
+    }
+
+    @Test
+    fun `profile_op all-profiles round-trips to JS via profile_response`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+
+        // Host already preloads the existing profiles on construction; pre-seed
+        // two by calling the controller-level host-side helpers.
+        controller.profileSave("day")
+        controller.profileSave("night")
+
+        js.calls.clear()
+        // Page asks for the profile list.
+        controller.onSignal(
+            "profile_op",
+            listOf(JsonPrimitive("all-profiles"), JsonPrimitive(""), kotlinx.serialization.json.JsonNull),
+        )
+
+        val reply = js.fromPythonCalls().single { "profile_response" in it }
+        assertTrue("\"all-profiles\"" in reply, reply)
+        assertTrue("\"day\"" in reply && "\"night\"" in reply, reply)
+        // Flat map — JS got_all_profiles adds __default__ itself; the old
+        // {"profiles":{...},"__default__":{}} wrapper rendered an empty list.
+        assertFalse("\"profiles\"" in reply, reply)
+    }
+
+    @Test
+    fun `profile_op apply-profile writes session keys and acks page`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val hostUi = FakeHostUi()
+        val controller = newController(root, js, hostUi)
+        bringBridgeUp(controller, js)
+
+        // Pre-seed a profile.
+        controller.profileSave("p")
+
+        // Apply it with new settings via profile_op(apply-profile, ...).
+        js.calls.clear()
+        controller.onSignal(
+            "profile_op",
+            listOf(
+                JsonPrimitive("apply-profile"),
+                JsonPrimitive("p"),
+                kotlinx.serialization.json.buildJsonObject {
+                    put("base_font_size", JsonPrimitive(28))
+                },
+            ),
+        )
+        assertEquals(28, hostUi.currentFonts.defaultFontSize)
+        assertTrue("\"apply-profile\"" in js.fromPythonCalls().single { "profile_response" in it })
+        assertTrue("\"viewer_font_size_changed\"" in js.fromPythonCalls().single { "viewer_font_size_changed" in it })
+    }
+
+    @Test
+    fun `profile_op save-profile with null settings deletes`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+
+        controller.profileSave("a")
+        assertEquals(setOf("a"), controller.state.value.profiles.keys)
+        controller.onSignal(
+            "profile_op",
+            listOf(
+                JsonPrimitive("save-profile"),
+                JsonPrimitive("a"),
+                kotlinx.serialization.json.JsonNull,
+            ),
+        )
+        assertEquals(emptySet(), controller.state.value.profiles.keys)
+        assertTrue("\"save-profile\"" in js.fromPythonCalls().single { "profile_response" in it })
+    }
+
+    @Test
+    fun `opening a new book resets panel visibility and reloads its annotations`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        controller.openBook { dest -> dest.writeBytes(minimalEpub()) }
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+
+        // Inject one bookmark on the open book.
+        controller.onSignal(
+            "new_bookmark",
+            listOf(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("cfi", JsonPrimitive("epubcfi(/6/4!)"))
+                    put("title", JsonPrimitive("First"))
+                },
+            ),
+        )
+        controller.onSignal("toggle_bookmarks", emptyList())
+        assertTrue(controller.state.value.bookmarksVisible)
+
+        // Reopen the same EPUB — bookmarks carry over (file-backed store).
+        controller.openBook { dest -> dest.writeBytes(minimalEpub()) }
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+        assertFalse(controller.state.value.bookmarksVisible, "panel hides on new book")
+        assertEquals(1, controller.state.value.bookmarks.size, "persisted bookmark reloaded")
+        assertEquals("First", controller.state.value.bookmarks.single().title)
     }
 
     // ---- fixture ---------------------------------------------------------------

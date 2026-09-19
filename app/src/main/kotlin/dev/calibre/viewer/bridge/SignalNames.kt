@@ -23,6 +23,7 @@ object SignalNames {
         "toggle_toc",
         "toggle_bookmarks",
         "toggle_highlights",
+        "toggle_profiles",
         "new_bookmark",
         "toggle_inspector",
         "toggle_lookup",

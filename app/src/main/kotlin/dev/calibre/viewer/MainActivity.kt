@@ -7,6 +7,7 @@
 
 package dev.calibre.viewer
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -22,7 +23,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,6 +42,7 @@ import dev.calibre.viewer.host.ViewerController
 import dev.calibre.viewer.ui.ViewerScreen
 import dev.calibre.viewer.web.AndroidAssetSource
 import dev.calibre.viewer.web.ViewerWebHost
+import java.io.File
 import java.io.FileNotFoundException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.Json
@@ -50,7 +52,6 @@ class MainActivity : ComponentActivity(), HostUi {
 
     private lateinit var controller: ViewerController
     private var host: ViewerWebHost? = null
-    private var immersive = true
     private var lastDark = false
 
     /** Classic container: the WebView (index 0) under the overlay ComposeView. */
@@ -61,7 +62,7 @@ class MainActivity : ComponentActivity(), HostUi {
     private val rebuildCounter = mutableIntStateOf(0)
 
     private val pickBook =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        registerForActivityResult(OpenPersistableDocument()) { uri ->
             uri?.let(::openUri)
         }
 
@@ -74,12 +75,20 @@ class MainActivity : ComponentActivity(), HostUi {
         // CSS viewport: content in a top band, blank below), and start
         // immersive — a reading surface shows no chrome by default.
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        if (android.os.Build.VERSION.SDK_INT >= 27) {
+        // SHORT_EDGES + layoutInDisplayCutoutMode are API 28+; below that the
+        // edge-to-edge flag alone is the best available behavior.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             val lp = window.attributes
             lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             window.attributes = lp
         }
+        // Always-fullscreen reader: classic FULLSCREEN flag covers pre-30,
+        // WindowInsetsController covers 30+. Both run on every API level
+        // to be safe, then re-applied in onResume / onWindowFocusChanged
+        // so swipe-reveals (status bar pulse, notif shade, gesture nav) are
+        // immediately hidden again.
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         applyImmersive()
 
         val assets = AndroidAssetSource(assets)
@@ -117,6 +126,7 @@ class MainActivity : ComponentActivity(), HostUi {
         // touches always reach the WebView.
         webHolder = FrameLayout(this)
         composeHolder = ComposeView(this)
+        // The panel overlay fills the whole window above the WebView.
         webHolder.addView(composeHolder, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(webHolder)
@@ -126,7 +136,8 @@ class MainActivity : ComponentActivity(), HostUi {
             LaunchedEffect(rebuildCounter.intValue) { rebuildHost() }
             composeHolder.visibility = when {
                 state.preparing || state.loadingMessage != null ||
-                    state.errorMessage != null || state.tocVisible || state.searchVisible -> View.VISIBLE
+                    state.errorMessage != null || state.tocVisible || state.searchVisible ||
+                    state.bookmarksVisible || state.highlightsVisible || state.profilesVisible -> View.VISIBLE
                 else -> View.GONE
             }
             ViewerScreen(
@@ -138,6 +149,14 @@ class MainActivity : ComponentActivity(), HostUi {
                 onSearchStep = controller::stepSearchResult,
                 onSearchResultClick = controller::showSearchResult,
                 onDismissSearch = controller::dismissSearch,
+                onBookmarkClick = controller::bookmarkClick,
+                onHighlightClick = controller::highlightClick,
+                onSaveProfile = controller::profileSave,
+                onApplyProfile = controller::profileApply,
+                onDeleteProfile = controller::profileDelete,
+                onResetProfileDefaults = controller::profileResetDefaults,
+                onProfileDraftChange = controller::setProfileDraftName,
+                onDismissPanels = controller::dismissPanels,
             )
         }
 
@@ -193,17 +212,66 @@ class MainActivity : ComponentActivity(), HostUi {
             android.content.res.Configuration.UI_MODE_NIGHT_YES
 
     private fun openUri(uri: Uri) {
-        controller.openBook { destination ->
-            val input = contentResolver.openInputStream(uri)
-                ?: throw FileNotFoundException(uri.toString())
-            input.use { source ->
-                destination.outputStream().use { source.copyTo(it) }
+        // Persistable grants only exist for ACTION_OPEN_DOCUMENT results; an
+        // ACTION_VIEW grant (file managers' "open with") is transient. Taking
+        // it when possible means the recents entry survives reboots; a
+        // SecurityException just degrades to session-only.
+        if (uri.scheme == "content") {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (e: SecurityException) {
+                // Expected for ACTION_VIEW sources.
             }
+        }
+        controller.openBook(originKey = uri.toString()) { destination ->
+            drainInto(uri, destination)
+        }
+    }
+
+    /** ask_for_open(recent path): open the original source directly. */
+    override fun tryOpenRecent(path: String): Boolean {
+        val uri = Uri.parse(path)
+        val readable = if (uri.scheme == "content") {
+            try {
+                contentResolver.openInputStream(uri)?.close() != null
+            } catch (e: Exception) {
+                false
+            }
+        } else {
+            File(uri.path ?: path).canRead()
+        }
+        if (!readable) {
+            Toast.makeText(this, R.string.recent_unavailable, Toast.LENGTH_SHORT).show()
+            return false
+        }
+        controller.openBook(originKey = path) { destination -> drainInto(uri, destination) }
+        return true
+    }
+
+    /** Copy a book source (SAF stream or plain file) into the staging slot. */
+    private fun drainInto(uri: Uri, destination: File) {
+        val input: java.io.InputStream = if (uri.scheme == "content") {
+            contentResolver.openInputStream(uri)
+                ?: throw FileNotFoundException(uri.toString())
+        } else {
+            File(uri.path ?: uri.toString()).inputStream()
+        }
+        input.use { source ->
+            destination.outputStream().use { source.copyTo(it) }
         }
     }
 
     // ---- input --------------------------------------------------------------
 
+    // dispatchKeyEvent (a public framework Activity entry point) is the only
+    // place that intercepts hardware page-turn keys BEFORE the focused
+    // WebView consumes them for its own scrolling; ComponentActivity's
+    // intermediate override carries an androidx-internal @RestrictTo that
+    // lint flags on the super call — a false positive for an override.
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val shortcut = EinkKeys.shortcutForKey(event.keyCode)
         if (shortcut != null && EinkKeys.isPageTurnAction(event.action)) {
@@ -223,6 +291,13 @@ class MainActivity : ComponentActivity(), HostUi {
             controller.dismissSearch()
             return true
         }
+        if (controller.state.value.bookmarksVisible ||
+            controller.state.value.highlightsVisible ||
+            controller.state.value.profilesVisible
+        ) {
+            controller.dismissPanels()
+            return true
+        }
         val webView = host?.webView
         return if (webView != null && webView.canGoBack()) {
             webView.goBack()
@@ -236,7 +311,16 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun onResume() {
         super.onResume()
+        applyImmersive()
         host?.startPolling()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // System gestures (notif shade, recents, status pulse) briefly
+        // re-show the bars. Re-hide them on every focus regain so the
+        // reader always returns to true fullscreen.
+        if (hasFocus) applyImmersive()
     }
 
     override fun onPause() {
@@ -282,21 +366,15 @@ class MainActivity : ComponentActivity(), HostUi {
         finish()
     }
 
-    override fun toggleImmersive(): Boolean {
-        immersive = !immersive
-        applyImmersive()
-        return immersive
-    }
-
     private fun applyImmersive() {
         val controllerCompat = WindowCompat.getInsetsController(window, window.decorView)
-        if (immersive) {
-            controllerCompat.hide(WindowInsetsCompat.Type.systemBars())
-            controllerCompat.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        } else {
-            controllerCompat.show(WindowInsetsCompat.Type.systemBars())
-        }
+        // Always immersive: hide both status and navigation bars and only
+        // let the user peek them transiently via an edge swipe. Subsequent
+        // onResume / onWindowFocusChanged re-applies this so the OS can't
+        // leave the bars revealed after a system gesture.
+        controllerCompat.hide(WindowInsetsCompat.Type.systemBars())
+        controllerCompat.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
     override fun applyFontSettings(settings: FontSettings): Boolean {
@@ -350,4 +428,22 @@ class MainActivity : ComponentActivity(), HostUi {
         const val DEFAULT_SANS_FAMILY = "sans-serif"
         const val DEFAULT_MONO_FAMILY = "monospace"
     }
+}
+
+/**
+ * ACTION_OPEN_DOCUMENT that additionally requests a persistable read grant,
+ * so recently-opened entries keep working across reboots (the plain
+ * OpenDocument contract never sets the flag and the grant dies with the
+ * process). The activity calls takePersistableUriPermission on the result.
+ */
+private class OpenPersistableDocument : ActivityResultContract<Array<String>, Uri?>() {
+    override fun createIntent(context: Context, input: Array<String>): Intent =
+        Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, input)
+            .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+        intent?.data?.takeIf { resultCode == Activity.RESULT_OK }
 }

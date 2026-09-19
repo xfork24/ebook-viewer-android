@@ -30,6 +30,7 @@
 
 package dev.calibre.viewer.bridge
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -148,9 +149,18 @@ class ViewerBridge(
     }
 
     private fun send(action: String, args: List<JsonElement>) {
-        val payload = Json.encodeToString(JsonElement.serializer(), buildJsonArray { args.forEach(::add) })
-        val name = Json.encodeToString(JsonElement.serializer(), JsonPrimitive(action))
-        js.eval("if (window.python_comm) python_comm._from_python($name, $payload)")
+        // Defense in depth: a single failure here must not crash the host
+        // (e-ink devices with vendor WebViews occasionally throw on payload
+        // sizing or argument types — recover and continue rather than die).
+        try {
+            val payload = Json.encodeToString(JsonElement.serializer(), buildJsonArray { args.forEach(::add) })
+            val name = Json.encodeToString(JsonElement.serializer(), JsonPrimitive(action))
+            js.eval("if (window.python_comm) python_comm._from_python($name, $payload)")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            warn("send($action) failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     // ---- typed entry points -------------------------------------------------
@@ -187,6 +197,47 @@ class ViewerBridge(
             readingRates ?: JsonNull,
             JsonNull,
         )
+    }
+
+    // ---- M2: HOST → JS annotations / profiles -----------------------
+
+    /**
+     * viewer.js:49640 highlight_action(uuid, which). The page calls this
+     * back into the annotations manager to mutate or focus a highlight.
+     * Used by the bookmarks / highlights panel rows to navigate the page
+     * to a known CFI without going through goto_cfi.
+     */
+    fun highlightAction(uuid: String, which: String) {
+        executeWhenReady("highlight_action", JsonPrimitive(uuid), JsonPrimitive(which))
+    }
+
+    /**
+     * viewer.js:49655 generic_action(name, data). The catch-all host→JS
+     * RPC used by search/profile/preference flows. Pass-through — name and
+     * data are echoed exactly. Use this only when no narrower slot exists.
+     */
+    fun genericAction(name: String, data: JsonElement) {
+        executeWhenReady("generic_action", JsonPrimitive(name), data)
+    }
+
+    /**
+     * viewer.js:49256 profile_response(which, x). Reply to profile_op
+     * round-trips: "all-profiles" → list, "save-profile" → ack, "apply-profile"
+     * → forward the dict so the page can apply settings locally, "request-save"
+     * → snapshot current settings.
+     */
+    fun profileResponse(which: String, data: JsonElement) {
+        executeWhenReady("profile_response", JsonPrimitive(which), data)
+    }
+
+    /**
+     * viewer.js:49776 get_current_cfi(request_id). Asks the page for the
+     * current CFI; the page replies asynchronously via `report_cfi(request_id,
+     * data)` (host-side handler already routes it back through `onSignal`).
+     * Used by the host's "Bookmark this page" button.
+     */
+    fun getCurrentCfi(requestId: String) {
+        executeWhenReady("get_current_cfi", JsonPrimitive(requestId))
     }
 
     companion object {

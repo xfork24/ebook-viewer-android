@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.calibre.viewer.host.TocRow
+import dev.calibre.viewer.ui.scaled
 
 @Composable
 fun TocPanel(
@@ -55,30 +56,30 @@ fun TocPanel(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
-                .width(320.dp)
+                .fillMaxWidth(2f / 3f)
                 .background(Color.White)
-                .border(1.dp, Color.Black)
+                .border(1.dp.scaled, Color.Black)
                 .pointerInput(Unit) { detectTapGestures { } },
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("目录", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("目录", fontSize = 18.sp.scaled, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(
                     "✕",
-                    fontSize = 18.sp,
+                    fontSize = 18.sp.scaled,
                     modifier = Modifier
-                        .padding(start = 12.dp)
+                        .padding(start = 12.dp.scaled)
                         .clickable { onDismiss() },
                 )
             }
 
             if (rows.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("本书没有目录", color = Color.Black, fontSize = 14.sp)
+                    Text("本书没有目录", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             } else {
                 val listState = rememberLazyListState()
@@ -93,7 +94,7 @@ fun TocPanel(
                         Text(
                             text = row.title.ifEmpty { "未命名" },
                             color = Color.Black,
-                            fontSize = 15.sp,
+                            fontSize = 15.sp.scaled,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             fontWeight = if (row.id in viewedNodes) FontWeight.Bold else null,
@@ -101,10 +102,10 @@ fun TocPanel(
                                 .fillMaxWidth()
                                 .clickable { onNodeClick(row.id) }
                                 .padding(
-                                    start = (12 + 16 * row.depth).dp,
-                                    end = 12.dp,
-                                    top = 8.dp,
-                                    bottom = 8.dp,
+                                    start = ((12 + 16 * row.depth).dp).scaled,
+                                    end = 12.dp.scaled,
+                                    top = 8.dp.scaled,
+                                    bottom = 8.dp.scaled,
                                 ),
                         )
                     }

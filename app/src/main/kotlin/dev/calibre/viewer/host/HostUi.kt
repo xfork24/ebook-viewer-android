@@ -11,15 +11,18 @@ interface HostUi {
     /** ask_for_open — launch the system file picker (SAF). */
     fun pickBook()
 
+    /**
+     * ask_for_open(path) from the recently-opened list — resolve the entry's
+     * original key (persisted content URI, or a plain path for legacy
+     * entries) and open the book from it directly.
+     * @return false when the source is no longer readable (grant expired,
+     *   file moved/deleted); the caller then drops the stale recent entry
+     *   and falls back to [pickBook]. Implementations toast on failure.
+     */
+    fun tryOpenRecent(path: String): Boolean
+
     /** quit / close_prep_finished — close the activity. */
     fun finishApp()
-
-    /**
-     * toggle_full_screen — enter/leave immersive mode.
-     * @return the new immersive state (reported back to JS via
-     *   full_screen_state_changed)
-     */
-    fun toggleImmersive(): Boolean
 
     /**
      * apply_font_settings — push session-data-derived font sizes/families

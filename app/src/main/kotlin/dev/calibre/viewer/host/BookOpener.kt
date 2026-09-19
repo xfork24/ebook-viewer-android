@@ -4,11 +4,16 @@
 // gui2/viewer/ui.py:open_book followed by the web_view render handshake.
 //
 // Staging: Android gives content:// URIs, not stable paths, and every copy
-// gets a fresh mtime — which calculateBookHash mixes into its digest. So a
-// book is staged ONCE into filesDir/books/inbox.epub and reused while a
-// content fingerprint (sha1 of size + first/last 1MB — the same fields the
-// cache hashes, minus mtime) is unchanged. That keeps the staged file's
-// mtime stable across re-opens, which is what makes cache.lookup() hit.
+// gets a fresh mtime — which calculateBookHash mixes into its digest. Two
+// defenses keep the hash stable for the same content:
+//   1. a book is staged ONCE into filesDir/books/inbox.epub and reused while
+//      a content fingerprint (sha1 of size + first/last 1MB — the same fields
+//      the cache hashes, minus mtime) is unchanged;
+//   2. every freshly placed inbox gets its mtime pinned to FIXED_EPOCH_MS, so
+//      even a full restage hashes to the same key (sha1 of size + constant +
+//      head/tail = content-derived) and positions/annotations/render cache
+//      entries survive. Legacy inboxes staged before the pin are migrated
+//      once via [normalizeLegacyInbox] (re-key stores, drop old cache entry).
 //
 // Rendering: cache.lookup() → hit means done; miss extracts via EpubInput,
 // transforms via RenderBook.render, then cache.commit() moves the transient
@@ -32,12 +37,19 @@ class BookOpener(
 ) {
 
     data class OpenedBook(
-        /** Staged EPUB in app storage — pathtoebook for start_book_load. */
+        /** Staged EPUB in app storage. */
         val sourceFile: File,
         /** Rendered view directory (manifest at its root). */
         val bookDir: File,
         /** Render-cache key — also keys LastReadStore positions. */
         val bookHash: String,
+        /**
+         * Opaque key the book was opened by — the SAF content URI on Android,
+         * falling back to the staged path. Forwarded as pathtoebook so the
+         * page's recently-opened list dedupes per source book, and echoed
+         * back by ask_for_open to reopen the original.
+         */
+        val originKey: String,
     )
 
     /**
@@ -83,16 +95,38 @@ class BookOpener(
             }
         }
         deleteQuietly(backup)
+        // Pin the mtime BEFORE the fingerprint lands: calculateBookHash mixes
+        // it in, so a fixed epoch makes the hash content-derived and a future
+        // restage of the same book maps to the same cache key. A failed
+        // setLastModified degrades to the legacy behavior (real mtime).
+        inbox.setLastModified(FIXED_EPOCH_MS)
         File(booksDir, FINGERPRINT_NAME).writeText(fingerprint)
         return inbox
     }
 
+    /**
+     * One-time migration for an inbox staged before mtime pinning: re-date
+     * the file and report the hash shift, so the caller can re-key its
+     * stores (position, annotations, rates) and drop the old render-cache
+     * entry. Returns null when there is nothing to migrate (no inbox, already
+     * pinned, re-date failed, or the hash didn't move).
+     */
+    fun normalizeLegacyInbox(): Pair<String, String>? {
+        val inbox = File(booksDir, INBOX_NAME)
+        if (!inbox.isFile || inbox.lastModified() == FIXED_EPOCH_MS) return null
+        val oldHash = cache.calculateBookHash(inbox)
+        if (!inbox.setLastModified(FIXED_EPOCH_MS)) return null
+        val newHash = cache.calculateBookHash(inbox)
+        if (oldHash == newHash) return null
+        return oldHash to newHash
+    }
+
     /** Resolve a staged book to its rendered directory, rendering if needed. */
-    fun open(sourceFile: File, force: Boolean = false): OpenedBook {
+    fun open(sourceFile: File, force: Boolean = false, originKey: String? = null): OpenedBook {
         val bookHash = cache.calculateBookHash(sourceFile)
         val existing = if (force) null else cache.lookup(sourceFile)
         val bookDir = existing ?: renderFresh(sourceFile, bookHash)
-        return OpenedBook(sourceFile, bookDir, bookHash)
+        return OpenedBook(sourceFile, bookDir, bookHash, originKey ?: sourceFile.path)
     }
 
     private fun renderFresh(sourceFile: File, bookHash: String): File {
@@ -167,5 +201,8 @@ class BookOpener(
         const val STAGED_NAME = "inbox.epub.new"
         const val BACKUP_NAME = "inbox.epub.old"
         const val FINGERPRINT_NAME = "inbox.fingerprint"
+
+        /** 2001-09-09T01:46:40Z — the mtime every staged inbox is pinned to. */
+        const val FIXED_EPOCH_MS = 1_000_000_000_000L
     }
 }

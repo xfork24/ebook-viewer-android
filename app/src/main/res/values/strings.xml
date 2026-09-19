@@ -9,5 +9,6 @@
     <string name="no_book_opened">未打开图书</string>
     <string name="copied">已复制</string>
     <string name="no_browser">没有可打开链接的应用</string>
+    <string name="recent_unavailable">原文件已不可访问，请重新选择</string>
     <string name="dismiss">关闭</string>
 </resources>

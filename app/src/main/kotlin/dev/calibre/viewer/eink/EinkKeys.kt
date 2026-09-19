@@ -22,6 +22,14 @@ object EinkKeys {
         else -> null
     }
 
-    /** ACTION_DOWN only — auto-repeat delivers further DOWNs, which viewer.js already debounces. */
-    fun isPageTurnAction(action: Int): Boolean = action == KeyEvent.ACTION_DOWN
+    /**
+     * Initial press only: ACTION_DOWN with repeatCount == 0. Holding a
+     * volume key auto-repeats further DOWNs (repeatCount > 0) which must not
+     * machine-gun page turns on a slow e-ink panel. Non-initial events for a
+     * mapped key are still consumed by the dispatcher (see
+     * MainActivity.dispatchKeyEvent) so they never reach the WebView or the
+     * system volume UI.
+     */
+    fun isPageTurnPress(action: Int, repeatCount: Int): Boolean =
+        action == KeyEvent.ACTION_DOWN && repeatCount == 0
 }

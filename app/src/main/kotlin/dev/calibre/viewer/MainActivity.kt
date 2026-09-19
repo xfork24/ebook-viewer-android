@@ -310,8 +310,14 @@ class MainActivity : ComponentActivity(), HostUi {
     @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val shortcut = EinkKeys.shortcutForKey(event.keyCode)
-        if (shortcut != null && EinkKeys.isPageTurnAction(event.action)) {
-            controller.pageTurn(shortcut)
+        if (shortcut != null) {
+            // Consume EVERY event for a mapped key: repeats and UPs leaking
+            // through would double-turn (the WebView has its own keyboard
+            // handling) or flash the system volume UI. Only the initial
+            // press turns a page.
+            if (EinkKeys.isPageTurnPress(event.action, event.repeatCount)) {
+                controller.pageTurn(shortcut)
+            }
             return true
         }
         return super.dispatchKeyEvent(event)
@@ -348,6 +354,9 @@ class MainActivity : ComponentActivity(), HostUi {
     override fun onResume() {
         super.onResume()
         applyImmersive()
+        // Un-freeze the WebView before polling resumes, or the first bridge
+        // polls would queue against paused timers.
+        host?.resumeFromBackground()
         host?.startPolling()
     }
 
@@ -361,7 +370,10 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun onPause() {
         super.onPause()
+        // Stop polling first so no watchdog tick lands between "stopped"
+        // and "frozen"; then freeze the whole WebView (timers + layout).
         host?.stopPolling()
+        host?.suspendForBackground()
     }
 
     override fun onStop() {

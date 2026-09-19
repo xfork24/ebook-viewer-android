@@ -96,6 +96,29 @@ class ViewerWebHost(
 
     fun stopPolling() = watchdog.stop()
 
+    /**
+     * Freeze the WebView for background residence (the e-ink battery win:
+     * otherwise Blink keeps timers/layout/JS running behind a hidden
+     * activity). `onPause()` pauses this view; `pauseTimers()` freezes every
+     * WebView timer process-wide. Freeze, not cancel — the 1s scroll-position
+     * debounce still fires on resume, so the reading position survives. The
+     * only unrecoverable path is process death within that debounce of a
+     * page turn, which loses at most one turn.
+     */
+    fun suspendForBackground() {
+        webView.onPause()
+        // Historically static, instance-shaped in SDK 35 — call on the view
+        // so this compiles against both forms. Affects every WebView in the
+        // process (we own exactly one).
+        webView.pauseTimers()
+    }
+
+    /** Inverse of [suspendForBackground]; call before resuming polling. */
+    fun resumeFromBackground() {
+        webView.resumeTimers()
+        webView.onResume()
+    }
+
     private companion object {
         const val TAG = "ViewerWebHost"
     }

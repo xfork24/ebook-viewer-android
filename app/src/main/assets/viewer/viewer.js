@@ -32815,6 +32815,7 @@ return this.__repr__();
             }
             var panel;
             panel = create_goto_list(onclick, current_position_data, book.manifest.page_list, show_sub_panel);
+            panel.classList.add("android-aligned-secondary-list");
             ρσ_interpolate_kwargs.call(this, set_css, [container].concat([ρσ_desugar_kwargs({display: "flex", flex_direction: "column"})]));
             ρσ_interpolate_kwargs.call(this, set_css, [panel].concat([ρσ_desugar_kwargs({flex_grow: "10"})]));
             container.appendChild(panel);
@@ -35373,38 +35374,15 @@ return this.__repr__();
                 // touch targets.
                 "#book-overlay input,#book-overlay select,#book-overlay textarea,#book-overlay button,#book-overlay td,#book-overlay th,#book-overlay label,#book-overlay h1,#book-overlay h2,#book-overlay h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
                 ".modal-container input,.modal-container select,.modal-container textarea,.modal-container button,.modal-container td,.modal-container th,.modal-container label,.modal-container h1,.modal-container h2,.modal-container h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
-                // Two-column form rows in Preferences / Go-to:
-                // the default td vertical-align:baseline puts
-                // the label baseline on a different line than
-                // the select/input baseline (a control's
-                // baseline is its bottom; a text run's is the
-                // glyph baseline). The label reads "pinned to
-                // top", the control sits "pinned to bottom".
-                // Force middle for both panels, and widen the
-                // vertical padding so the row has real height
-                // to center within.
-                "#book-overlay td,#book-overlay th,.modal-container td,.modal-container th{vertical-align:middle !important;padding:0.4em 0.6em !important;}",
-                // Center each secondary panel's contents
-                // (Go-to / Preferences / Reading Stats /
-                // Lookup) inside the overlay container. The
-                // overlay itself is an absolute-positioned
-                // full-screen box; with no flex on its direct
-                // child the form rows anchor to the top edge
-                // and leave a lot of empty space below.
-                "#book-overlay{display:flex !important;flex-direction:column !important;align-items:center !important;justify-content:center !important;}",
-                "#book-overlay>div,.modal-container>div{margin:auto !important;display:flex !important;flex-direction:column !important;align-items:center !important;}",
-                // The second-level panels (book-list, prefs
-                // sub-pages) render an inner <div> that's
-                // display:block — flex alignItems does not
-                // center a block child inside a flex parent.
-                // Force every nested panel child to its own
-                // intrinsic width and centered, so the row of
-                // cards / form rows sits visually centered
-                // instead of stretching full-width.
-                "#book-overlay>div>div,.modal-container>div>div{width:fit-content !important;max-width:100% !important;margin:0 auto !important;align-self:center !important;}",
-                // Tighten the inter-row spacing — the form
-                // tables would otherwise sit far apart.
-                "#book-overlay table,.modal-container table{border-collapse:collapse !important;}",
+                // Keep label/control cells centered within real form rows.
+                "#book-overlay td,#book-overlay th{vertical-align:middle !important;padding:0.4em 0.6em !important;}",
+                // Go-to and Preferences use the same generic title/subtitle
+                // list. Keep every card in normal top-aligned document flow,
+                // while aligning each row's two columns by their middles.
+                // Do not change #book-overlay's display: its inline block/none
+                // value is the reader's visibility state machine.
+                ".android-aligned-secondary-list .item-first-row{align-items:center !important;}",
+                ".android-aligned-secondary-list .item-subtitle{padding-top:0 !important;}",
                 // Generic fallback for any leftover viewer.js element.
                 "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",
                 // Universal bump: every non-input, non-script element inside
@@ -40478,6 +40456,7 @@ return this.__repr__();
             var c, items;
             self.set_top_title(self.main_title);
             c = E.div();
+            c.classList.add("android-aligned-secondary-list");
             container.appendChild(c);
             self.title_map = Object.create(null);
             items = [];

@@ -720,6 +720,34 @@ def main() -> None:
     if base_font_default_literal in js:
         js = js.replace(base_font_default_literal, base_font_default_replacement, 1)
 
+    # ---- Go-to / Preferences secondary-list row alignment ----
+    # Both screens are built with book_list.item_list. Upstream aligns each
+    # row to flex-start and adds top padding to the subtitle, which makes the
+    # left title and right description look vertically staggered. Give only
+    # these two lists semantic hooks so the Android CSS below can align the
+    # contents inside each row. The lists themselves retain upstream's normal
+    # top-to-bottom flow and remain aligned to the top of the secondary page.
+    js = patch_literal(
+        js,
+        '            panel = create_goto_list(onclick, current_position_data, book.manifest.page_list, show_sub_panel);\n'
+        '            ρσ_interpolate_kwargs.call(this, set_css, [container].concat([ρσ_desugar_kwargs({display: "flex", flex_direction: "column"})]));',
+        '            panel = create_goto_list(onclick, current_position_data, book.manifest.page_list, show_sub_panel);\n'
+        '            panel.classList.add("android-aligned-secondary-list");\n'
+        '            ρσ_interpolate_kwargs.call(this, set_css, [container].concat([ρσ_desugar_kwargs({display: "flex", flex_direction: "column"})]));',
+        'Go-to secondary-list hooks',
+    )
+    js = patch_literal(
+        js,
+        '            self.set_top_title(self.main_title);\n'
+        '            c = E.div();\n'
+        '            container.appendChild(c);',
+        '            self.set_top_title(self.main_title);\n'
+        '            c = E.div();\n'
+        '            c.classList.add("android-aligned-secondary-list");\n'
+        '            container.appendChild(c);',
+        'Preferences secondary-list hooks',
+    )
+
     # ---- global JS-side UI scale: 1.5× everything that viewer.js renders ----
     # Native Compose panels are already scaled via UiScale.kt; this matches
     # that for the toolbar overlay, prefs panel, search/lookup widgets,
@@ -782,38 +810,15 @@ def main() -> None:
             '                // touch targets.\n'
             '                "#book-overlay input,#book-overlay select,#book-overlay textarea,#book-overlay button,#book-overlay td,#book-overlay th,#book-overlay label,#book-overlay h1,#book-overlay h2,#book-overlay h3{font-size:1em !important;padding:0.25em 0.5em !important;}",\n'
             '                ".modal-container input,.modal-container select,.modal-container textarea,.modal-container button,.modal-container td,.modal-container th,.modal-container label,.modal-container h1,.modal-container h2,.modal-container h3{font-size:1em !important;padding:0.25em 0.5em !important;}",\n'
-            '                // Two-column form rows in Preferences / Go-to:\n'
-            '                // the default td vertical-align:baseline puts\n'
-            '                // the label baseline on a different line than\n'
-            '                // the select/input baseline (a control\'s\n'
-            '                // baseline is its bottom; a text run\'s is the\n'
-            '                // glyph baseline). The label reads "pinned to\n'
-            '                // top", the control sits "pinned to bottom".\n'
-            '                // Force middle for both panels, and widen the\n'
-            '                // vertical padding so the row has real height\n'
-            '                // to center within.\n'
-            '                "#book-overlay td,#book-overlay th,.modal-container td,.modal-container th{vertical-align:middle !important;padding:0.4em 0.6em !important;}",\n'
-            '                // Center each secondary panel\'s contents\n'
-            '                // (Go-to / Preferences / Reading Stats /\n'
-            '                // Lookup) inside the overlay container. The\n'
-            '                // overlay itself is an absolute-positioned\n'
-            '                // full-screen box; with no flex on its direct\n'
-            '                // child the form rows anchor to the top edge\n'
-            '                // and leave a lot of empty space below.\n'
-            '                "#book-overlay{display:flex !important;flex-direction:column !important;align-items:center !important;justify-content:center !important;}",\n'
-            '                "#book-overlay>div,.modal-container>div{margin:auto !important;display:flex !important;flex-direction:column !important;align-items:center !important;}",\n'
-            '                // The second-level panels (book-list, prefs\n'
-            '                // sub-pages) render an inner <div> that\'s\n'
-            '                // display:block — flex alignItems does not\n'
-            '                // center a block child inside a flex parent.\n'
-            '                // Force every nested panel child to its own\n'
-            '                // intrinsic width and centered, so the row of\n'
-            '                // cards / form rows sits visually centered\n'
-            '                // instead of stretching full-width.\n'
-            '                "#book-overlay>div>div,.modal-container>div>div{width:fit-content !important;max-width:100% !important;margin:0 auto !important;align-self:center !important;}",\n'
-            '                // Tighten the inter-row spacing — the form\n'
-            '                // tables would otherwise sit far apart.\n'
-            '                "#book-overlay table,.modal-container table{border-collapse:collapse !important;}",\n'
+            '                // Keep label/control cells centered within real form rows.\n'
+            '                "#book-overlay td,#book-overlay th{vertical-align:middle !important;padding:0.4em 0.6em !important;}",\n'
+            '                // Go-to and Preferences use the same generic title/subtitle\n'
+            '                // list. Keep every card in normal top-aligned document flow,\n'
+            '                // while aligning each row\'s two columns by their middles.\n'
+            '                // Do not change #book-overlay\'s display: its inline block/none\n'
+            '                // value is the reader\'s visibility state machine.\n'
+            '                ".android-aligned-secondary-list .item-first-row{align-items:center !important;}",\n'
+            '                ".android-aligned-secondary-list .item-subtitle{padding-top:0 !important;}",\n'
             '                // Generic fallback for any leftover viewer.js element.\n'
             '                "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",\n'
             '                // Universal bump: every non-input, non-script element inside\n'

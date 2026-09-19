@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -155,7 +156,10 @@ fun ProfilesPanel(
                             }) {
                                 Text(
                                     if (armedDelete == entry.key) "确认?" else "删除",
-                                    color = if (armedDelete == entry.key) Color.Red else Color.Black,
+                                    color = Color.Black,
+                                    // The armed (confirm) state distinguishes itself by
+                                    // weight, not color — pure grayscale panel.
+                                    fontWeight = if (armedDelete == entry.key) FontWeight.Bold else null,
                                     fontSize = 14.sp.scaled,
                                 )
                             }

@@ -23,10 +23,12 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -38,6 +40,7 @@ import dev.calibre.viewer.host.HostUi
 import dev.calibre.viewer.host.StandardFontFamily
 import dev.calibre.viewer.host.UiData
 import dev.calibre.viewer.host.ViewerController
+import dev.calibre.viewer.ui.NoIndication
 import dev.calibre.viewer.ui.ViewerScreen
 import dev.calibre.viewer.web.AndroidAssetSource
 import dev.calibre.viewer.web.ViewerWebHost
@@ -152,24 +155,28 @@ class MainActivity : ComponentActivity(), HostUi {
                     state.bookmarksVisible || state.highlightsVisible || state.profilesVisible -> View.VISIBLE
                 else -> View.GONE
             }
-            ViewerScreen(
-                state = state,
-                onDismissError = controller::dismissError,
-                onTocNodeClick = controller::gotoTocNode,
-                onDismissToc = controller::dismissToc,
-                onSearch = controller::startSearch,
-                onSearchStep = controller::stepSearchResult,
-                onSearchResultClick = controller::showSearchResult,
-                onDismissSearch = controller::dismissSearch,
-                onBookmarkClick = controller::bookmarkClick,
-                onHighlightClick = controller::highlightClick,
-                onSaveProfile = controller::profileSave,
-                onApplyProfile = controller::profileApply,
-                onDeleteProfile = controller::profileDelete,
-                onResetProfileDefaults = controller::profileResetDefaults,
-                onProfileDraftChange = controller::setProfileDraftName,
-                onDismissPanels = controller::dismissPanels,
-            )
+            // One-shot ripple/motion kill for every native panel: clickable
+            // and Button resolve their indication through LocalIndication.
+            CompositionLocalProvider(LocalIndication provides NoIndication) {
+                ViewerScreen(
+                    state = state,
+                    onDismissError = controller::dismissError,
+                    onTocNodeClick = controller::gotoTocNode,
+                    onDismissToc = controller::dismissToc,
+                    onSearch = controller::startSearch,
+                    onSearchStep = controller::stepSearchResult,
+                    onSearchResultClick = controller::showSearchResult,
+                    onDismissSearch = controller::dismissSearch,
+                    onBookmarkClick = controller::bookmarkClick,
+                    onHighlightClick = controller::highlightClick,
+                    onSaveProfile = controller::profileSave,
+                    onApplyProfile = controller::profileApply,
+                    onDeleteProfile = controller::profileDelete,
+                    onResetProfileDefaults = controller::profileResetDefaults,
+                    onProfileDraftChange = controller::setProfileDraftName,
+                    onDismissPanels = controller::dismissPanels,
+                )
+            }
         }
 
         intent?.takeIf { it.action == Intent.ACTION_VIEW }?.let(::handleOpenIntent)

@@ -24,9 +24,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
@@ -48,6 +46,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import dev.calibre.viewer.host.SearchMode
 import dev.calibre.viewer.host.SearchResult
 import dev.calibre.viewer.ui.scaled
@@ -148,15 +148,35 @@ fun SearchPanel(
                             .clickable { modeMenuOpen = true }
                             .padding(vertical = 6.dp.scaled),
                     )
-                    DropdownMenu(expanded = modeMenuOpen, onDismissRequest = { modeMenuOpen = false }) {
-                        MODE_LABELS.forEach { (m, label) ->
-                            DropdownMenuItem(
-                                text = { Text(label, fontSize = 14.sp.scaled) },
-                                onClick = {
-                                    mode = m
-                                    modeMenuOpen = false
-                                },
-                            )
+                    // Plain Popup instead of M3 DropdownMenu: white box,
+                    // black border, zero expand animation.
+                    if (modeMenuOpen) {
+                        Popup(
+                            onDismissRequest = { modeMenuOpen = false },
+                            properties = PopupProperties(focusable = true),
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .background(Color.White)
+                                    .border(1.dp.scaled, Color.Black)
+                                    .padding(vertical = 4.dp.scaled),
+                            ) {
+                                MODE_LABELS.forEach { (m, label) ->
+                                    Text(
+                                        label,
+                                        fontSize = 14.sp.scaled,
+                                        modifier = Modifier
+                                            .clickable {
+                                                mode = m
+                                                modeMenuOpen = false
+                                            }
+                                            .padding(
+                                                horizontal = 12.dp.scaled,
+                                                vertical = 8.dp.scaled,
+                                            ),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -165,9 +185,9 @@ fun SearchPanel(
                     fontSize = 13.sp.scaled,
                     modifier = Modifier.padding(start = 4.dp.scaled),
                 )
-                Checkbox(
+                EinkCheckbox(
                     checked = caseSensitive,
-                    onCheckedChange = { caseSensitive = it },
+                    onToggle = { caseSensitive = it },
                 )
                 Box(modifier = Modifier.weight(1f))
                 Text(
@@ -213,7 +233,8 @@ fun SearchPanel(
                 // keep the selection visible as discovery/clicks move it
                 val currentIdx = results.indexOfFirst { it.resultNum == currentResultNum }
                 LaunchedEffect(currentIdx, results.size) {
-                    if (currentIdx >= 0) listState.animateScrollToItem(currentIdx)
+                    // Instant jump: animated scrolling is a smear on e-ink.
+                    if (currentIdx >= 0) listState.scrollToItem(currentIdx)
                 }
                 LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(results, key = { it.resultNum }) { result ->
@@ -258,4 +279,24 @@ private fun snippet(result: SearchResult): AnnotatedString = buildAnnotatedStrin
     withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(result.text) }
     append(after)
     if (after.length == 30) append("…")
+}
+
+/**
+ * Static checkbox: black-bordered square with a black inner square when
+ * checked. The M3 Checkbox animates check/fill state — on e-ink that is a
+ * multi-frame gray flicker for a binary state.
+ */
+@Composable
+private fun EinkCheckbox(checked: Boolean, onToggle: (Boolean) -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(18.dp.scaled)
+            .border(1.dp.scaled, Color.Black)
+            .clickable { onToggle(!checked) },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Box(Modifier.size(10.dp.scaled).background(Color.Black))
+        }
+    }
 }

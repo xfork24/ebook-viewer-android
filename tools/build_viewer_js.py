@@ -28,6 +28,20 @@ and two Android WebView compatibility adaptations:
          an embedded WebView has no browser chrome, so legacy viewport units
          have the same desired semantics and keep the reader full-height)
 
+plus the e-ink adaptations (each an idempotent literal patch; a drifted
+anchor fails the build rather than silently re-shipping color/motion):
+
+    monochrome chrome palette — theme base constants, DEFAULT_COLORS
+    chromatic entries and the primary-color default are neutralized to
+    black/white (light and dark), so every derived surface and CSS variable
+    renders grayscale on panels without color
+    icon-select-all stroke -> currentColor (only hardcoded stroke color)
+    1ms motion kill in index.html — never `none`: animationend listeners
+    must still fire
+    override_book_colors default "never" -> "always" — book content is
+    binarized through apply_colors()'s override sheet (Preferences radio
+    stays changeable; persisted user choices win)
+
 Everything else — compiler invocation (external rapydscript CLI, beautified,
 private scope, baselib included, tree-shaken, source-mapped), the single-pass
 placeholder replacement of set_data(), and the icons/reset.css/base.css
@@ -206,6 +220,19 @@ def use_android_viewport_units(text: str) -> str:
     return ANDROID_VIEWPORT_UNIT_RE.sub(r'\1', text)
 
 
+def patch_literal(js: str, old: str, new: str, what: str) -> str:
+    """Replace exactly one occurrence of an upstream literal; die otherwise.
+
+    The e-ink monochrome patches must never silently revert because upstream
+    renamed a constant: a missing (or duplicated) anchor is a build failure,
+    not a no-op that quietly ships color again.
+    """
+    count = js.count(old)
+    if count != 1:
+        die(f'{what}: anchor found {count} times (expected 1) — upstream changed it')
+    return js.replace(old, new, 1)
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
@@ -260,12 +287,32 @@ def main() -> None:
     base_css = use_android_viewport_units(
         (calibre / 'resources' / 'content-server' / 'base.css').read_text(encoding='utf-8'))
     icons = merge_icons(calibre)
+    # icon-select-all is the only symbol in the merged sprite with a hardcoded
+    # stroke color (green); everything else inherits currentColor. E-ink
+    # panels render it as an opaque mid-gray smudge — inherit like its peers.
+    if icons.count('stroke:#30a82d') != 1:
+        die('icon-select-all green stroke #30a82d not found exactly once in merged sprite '
+            '(upstream changed it)')
+    icons = icons.replace('stroke:#30a82d', 'stroke:currentColor', 1)
+    # E-ink: every UI transition/animation completes in 1ms. Never
+    # `transition: none` — viewer.js listens for animationend (link-hint
+    # cleanup), and a suppressed animation never fires its end event; 1ms
+    # keeps those listeners working while being visually instant on a panel
+    # that repaints in ~100ms anyway. animation-iteration-count:1 freezes the
+    # only infinite animation (the cs_spin_bd loading spinner).
+    eink_motion_css = (
+        '<style id="android-eink-motion">'
+        ':root{--cs-dur-1:1ms !important;--cs-dur-2:1ms !important;--cs-dur-3:1ms !important;}'
+        '*,*::before,*::after{transition-duration:1ms !important;'
+        'animation-duration:1ms !important;animation-iteration-count:1 !important;}'
+        '</style>'
+    )
     # Same composition as compile_viewer()'s viewer.html, plus the two scripts
     # the Qt host would inject (translations placeholder, then viewer.js).
     index_html = (
         '<!DOCTYPE html>\n<html><head>'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
-        f'<style>{reset}</style><style>{base_css}</style>'
+        f'<style>{reset}</style><style>{base_css}</style>{eink_motion_css}'
         '<script>window.calibre_translations_data=null</script>'
         f'</head><body>{icons}<script src="/viewer.js"></script></body></html>'
     )
@@ -886,6 +933,121 @@ def main() -> None:
             ),
             1,
         )
+
+
+    # ---- e-ink: monochrome chrome palette ----
+    # The target devices are grayscale panels: calibre's warm sepia chrome
+    # (cream #F6F3E9 / brown #39322B) and its green primary rasterize as
+    # muddy mid-grays. Neutralize the compiled-in defaults so every derived
+    # surface (window/dialog/button/input colors, hover tints via
+    # light_mode_primary_tints, --calibre-color-primary* variables driving
+    # hover/focus/::selection/accent-color/progress bars) becomes pure
+    # black-on-white (light) / white-on-black (dark). The book-content sepia
+    # color-scheme presets elsewhere in the bundle use ρσ_d["..."] forms and
+    # are deliberately untouched. Every anchor below is unique in the
+    # compiled output (verified); a drifted anchor fails the build.
+
+    # Base constants of book_list.theme — light fg/bg pair and dark pair.
+    js = patch_literal(
+        js,
+        '        DARK = "#39322B";\n'
+        '        LIGHT = "#F6F3E9";\n'
+        '        LIGHT_DARKER = "#b6b3a8";\n'
+        '        DT_DARK = "#2d2d2d";\n'
+        '        DT_DARK_DARKER = "black";\n'
+        '        DT_DARK_LIGHTER = "#777";\n'
+        '        DT_DARK_LIGTHER_CONTRAST = "#1d1d1d";\n'
+        '        DT_LIGHT = "#ddd";\n',
+        '        DARK = "#000000";\n'
+        '        LIGHT = "#ffffff";\n'
+        '        LIGHT_DARKER = "#d8d8d8";\n'
+        '        DT_DARK = "#000000";\n'
+        '        DT_DARK_DARKER = "black";\n'
+        '        DT_DARK_LIGHTER = "#777";\n'
+        '        DT_DARK_LIGTHER_CONTRAST = "#1d1d1d";\n'
+        '        DT_LIGHT = "#ffffff";\n',
+        'theme base constants',
+    )
+
+    # Chromatic entries in DEFAULT_COLORS. c(light, dark) references the
+    # module constants patched above, so error/hover/link/heart/outline all
+    # become fg-colored. bar-highlight must differ from both the (black) bar
+    # track and the (white) bar fill in light mode — mid-gray does; white in
+    # dark mode (track #777, fill #1d1d1d). input-* drop the deprecated CSS
+    # system-color keywords ("field"/"fieldtext") for deterministic values.
+    for _old, _new, _what in (
+        ('            ρσ_d["window-error-foreground"] = c("red", "#C40233");\n',
+         '            ρσ_d["window-error-foreground"] = c(DARK, DT_LIGHT);\n',
+         'window-error-foreground'),
+        ('            ρσ_d["window-hover-foreground"] = c("red", "#C40233");\n',
+         '            ρσ_d["window-hover-foreground"] = c(DARK, DT_LIGHT);\n',
+         'window-hover-foreground'),
+        ('            ρσ_d["link-foreground"] = c("blue", "#6cb4ee");\n',
+         '            ρσ_d["link-foreground"] = c(DARK, DT_LIGHT);\n',
+         'link-foreground'),
+        ('            ρσ_d["bar-highlight"] = c("yellow");\n',
+         '            ρσ_d["bar-highlight"] = c("#888888", "#ffffff");\n',
+         'bar-highlight'),
+        ('            ρσ_d["heart"] = c("#B92111");\n',
+         '            ρσ_d["heart"] = c(DARK, DT_LIGHT);\n',
+         'heart'),
+        ('            ρσ_d["button-end"] = c("#49423B", "#666");\n',
+         '            ρσ_d["button-end"] = c("#333333", "#666");\n',
+         'button-end'),
+        ('            ρσ_d["input-background"] = c("field", DT_DARK_DARKER);\n',
+         '            ρσ_d["input-background"] = c("#ffffff", DT_DARK_DARKER);\n',
+         'input-background'),
+        ('            ρσ_d["input-foreground"] = c("fieldtext", DT_LIGHT);\n',
+         '            ρσ_d["input-foreground"] = c("#000000", DT_LIGHT);\n',
+         'input-foreground'),
+        ('            ρσ_d["input-focus-outline-color"] = c("#4D90FE", DT_LIGHT);\n',
+         '            ρσ_d["input-focus-outline-color"] = c(DARK, DT_LIGHT);\n',
+         'input-focus-outline-color'),
+    ):
+        js = patch_literal(js, _old, _new, _what)
+
+    # Primary color default. In standalone mode both set_ui_colors call
+    # sites read ui_highlight_colors.default directly; this single literal
+    # therefore drives --calibre-color-primary* everywhere AND the light-mode
+    # tint math (light_mode_primary_tints mixes white with the primary to
+    # recolor window/hover/input/button surfaces — the source of today's
+    # green cast). Black primary in light mode tints those surfaces to
+    # neutral grays (window bg #f1f1f1, hover #d4d4d4); white primary in
+    # dark mode does the mirrored thing.
+    js = patch_literal(
+        js,
+        '                    ρσ_d["light"] = "#437000";\n'
+        '                    ρσ_d["dark"] = "#6cb4ee";\n',
+        '                    ρσ_d["light"] = "#000000";\n'
+        '                    ρσ_d["dark"] = "#ffffff";\n',
+        'ui_highlight_colors default primary',
+    )
+
+    # ---- e-ink: force book-content color binarization by default ----
+    # apply_colors() writes the * { color: fg !important; background-color:
+    # bg !important; border-color: fg !important } override sheet whenever
+    # override_book_colors != 'never'; fg/bg come from the selected scheme,
+    # and the host already pushes a pure black/white "system" palette. The
+    # Preferences radio (never / dark / always) reads this same default and
+    # stays changeable; users who explicitly chose otherwise have the key
+    # persisted in session_data.json and are unaffected. Same pattern as the
+    # base_font_size 16→32 default bump above.
+    js = patch_literal(
+        js,
+        '            ρσ_d["override_book_colors"] = (function(){\n'
+        '                var ρσ_d = Object.create(null);\n'
+        '                ρσ_d["default"] = "never";\n'
+        '                ρσ_d["category"] = "read_book";\n'
+        '                return ρσ_d;\n'
+        '            }).call(this);\n',
+        '            ρσ_d["override_book_colors"] = (function(){\n'
+        '                var ρσ_d = Object.create(null);\n'
+        '                ρσ_d["default"] = "always";\n'
+        '                ρσ_d["category"] = "read_book";\n'
+        '                return ρσ_d;\n'
+        '            }).call(this);\n',
+        'override_book_colors default',
+    )
 
 
     ASSET_DIR.mkdir(parents=True, exist_ok=True)

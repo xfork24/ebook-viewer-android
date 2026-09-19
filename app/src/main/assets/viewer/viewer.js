@@ -7016,7 +7016,7 @@ return parser;
             }).call(this);
             ρσ_d["base_font_size"] = (function(){
                 var ρσ_d = Object.create(null);
-                ρσ_d["default"] = 16;
+                ρσ_d["default"] = 32;
                 ρσ_d["category"] = "read_book";
                 ρσ_d["is_local"] = true;
                 return ρσ_d;
@@ -12742,7 +12742,7 @@ return this.__repr__();
         })());
         runtime = (function(){
             var ρσ_d = Object.create(null);
-            ρσ_d["is_standalone_viewer"] = false;
+            ρσ_d["is_standalone_viewer"] = true;
             ρσ_d["viewer_in_full_screen"] = false;
             ρσ_d["in_develop_mode"] = (typeof window !== "undefined") && !!window.calibre_in_develop_mode;
             ρσ_d["QT_VERSION"] = 0;
@@ -24908,7 +24908,7 @@ return this.__repr__();
                 ρσ_d["back"] = desc([ "Alt+ArrowLeft" ], "scroll", _("Back"));
                 ρσ_d["forward"] = desc([ "Alt+ArrowRight" ], "scroll", _("Forward"));
                 ρσ_d["toggle_toc"] = desc("Ctrl+t", "ui", _("Show/hide Table of Contents"));
-                ρσ_d["read_aloud"] = desc("Ctrl+s", "ui", _("Read aloud"));
+                // ρσ_d["read_aloud"] = desc("Ctrl+s", "ui", _("Read aloud"));  // removed for Android
                 ρσ_d["toggle_hints"] = desc("Alt+f", "ui", _("Follow links with the keyboard"));
                 ρσ_d["copy_to_clipboard"] = desc([ "Ctrl+c", "Meta+c" ], "ui", _("Copy to clipboard"));
                 ρσ_d["copy_location_to_clipboard"] = desc([ "Alt+c" ], "ui", _("Copy current location to clipboard"));
@@ -30966,7 +30966,7 @@ return this.__repr__();
                     ans.push(entry);
                 }
             }
-            sd.set("standalone_recently_opened", ans.slice(0, 25));
+            sd.set("standalone_recently_opened", ans.slice(0, 20));
             return ans;
         };
         if (!add_book_to_recently_viewed.__argnames__) Object.defineProperties(add_book_to_recently_viewed, {
@@ -35292,6 +35292,69 @@ return this.__repr__();
         });
 
         add_extra_css(main_overlay_css);
+        add_extra_css(function () {
+            return [
+                ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",
+                ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",
+                ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",
+                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"
+            ].join("");
+        });
+        // __android_js_ui_scale__
+        add_extra_css(function () {
+            return [
+                // Two independent 1.5× roots: #book-overlay (the Overlay
+                // container getter — the home open-book page AND the reader
+                // top-menu / secondary panels all render inside it) and the
+                // body-level modal-container (popup dialogs). The toolbar
+                // top-section is deliberately NOT a root: it is always a
+                // descendant of #book-overlay, so scaling it here as well
+                // would multiply (1.5 × 1.5). Every nested rule below uses
+                // 1em so font-size inherits exactly once.
+                "#book-overlay,.modal-container{font-size:1.5em !important;}",
+                ".read-book-main-overlay-action-icon{width:1.5em !important;height:1.5em !important;}",
+                // Each toolbar button (icon + label) — center them vertically
+                // so the 175%-sized icon and the regular label align at
+                // their middles, not their baselines (which made the row
+                // blow up and the icon float above the text).
+                ".read-book-main-overlay-action-control{display:inline-flex !important;align-items:center !important;justify-content:center !important;gap:0.4em !important;}",
+                // The rest are 1em (or smaller structural touches) so they
+                // inherit each root's 1.5× exactly once.
+                ".read-book-main-overlay-actions,.read-book-main-overlay-actions>ul>li{font-size:1em !important;}",
+                ".read-book-main-overlay-title{font-size:1em !important;}",
+                ".read-book-main-overlay-top-row,.read-book-main-overlay-footer{font-size:1em !important;}",
+                ".simple-panel{font-size:1em !important;}",
+                // Every calibre push button (home pitch "Open a book", form OK/Cancel, etc.).
+                ".calibre-push-button{font-size:1em !important;padding:0.5em 1em !important;}",
+                // Standalone home open-book pitch + recents list rows + tree lists.
+                ".calibre-container,.calibre-tree,.simple-tree,.tree-item-title,.simple-link{font-size:1em !important;}",
+                // Title bar (used by home + every secondary page).
+                ".main-top-bar,.top-bar-title{font-size:1em !important;}",
+                // Modal dialogs (confirm/quit prompts).
+                ".button-box{font-size:1em !important;}",
+                // Font-size chooser marks: enlarge the Aa glyphs so each is tappable on e-ink.
+                ".read-book-font-size-quick>option{padding:0.5em 0.6em !important;margin:0 0.25em !important;}",
+                // Reading stats overlay + auto-scroll message use this class.
+                ".read-book-overlay-aux-text{font-size:1em !important;}",
+                // Form elements inside overlay containers (Go to, Preferences,
+                // Font size, Reading statistics, Lookup). These have no stable
+                // class — they're plain <input>/<select>/<button>/<td> elements.
+                // Force them to inherit the 1.5× from the root and bump their
+                // touch targets.
+                "#book-overlay input,#book-overlay select,#book-overlay textarea,#book-overlay button,#book-overlay td,#book-overlay th,#book-overlay label,#book-overlay h1,#book-overlay h2,#book-overlay h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
+                ".modal-container input,.modal-container select,.modal-container textarea,.modal-container button,.modal-container td,.modal-container th,.modal-container label,.modal-container h1,.modal-container h2,.modal-container h3{font-size:1em !important;padding:0.25em 0.5em !important;}",
+                // Generic fallback for any leftover viewer.js element.
+                "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",
+                // Universal bump: every non-input, non-script element inside
+                // the reader containers inherits the root's 1.5× via this
+                // 1em chain. Re-stating with the wildcard guarantees every
+                // bare <div>/<span>/<td>/<li>/<a>/<button>/<p> gets the
+                // inheritance — the only safe way to catch the no-class
+                // elements (secondary-page forms, the open-book pitch, the
+                // Go-to list rows, etc.).
+                ".read-book-main-overlay-top-section *:not(input):not(select):not(textarea):not(script),#book-overlay *:not(input):not(select):not(textarea):not(script),.modal-container *:not(input):not(select):not(textarea):not(script){font-size:1em !important;}",
+            ].join("\n");
+        });
         ρσ_modules["read_book.main_overlay_style"].MAIN_OVERLAY_TS_CLASS = MAIN_OVERLAY_TS_CLASS;
         ρσ_modules["read_book.main_overlay_style"].MAIN_OVERLAY_ACTIONS_CLASS = MAIN_OVERLAY_ACTIONS_CLASS;
         ρσ_modules["read_book.main_overlay_style"].MAIN_OVERLAY_ACTION_CONTROL_CLASS = MAIN_OVERLAY_ACTION_CONTROL_CLASS;
@@ -35461,7 +35524,7 @@ return this.__repr__();
             container.dataset.cfs = cfs + "";
             quick = ρσ_interpolate_kwargs.call(E, E.datalist, [ρσ_desugar_kwargs({style: "display:flex; justify-content:space-around; flex-wrap: wrap; align-items: baseline;"})]);
             container.appendChild(quick);
-            var ρσ_Iter259 = [ 10, 12, 14, 16, 18, 20, 22 ];
+            var ρσ_Iter259 = [ 8, 16, 24, 32, 40, 48, 56 ];
             ρσ_Iter259 = ((typeof ρσ_Iter259[Symbol.iterator] === "function") ? (ρσ_Iter259 instanceof Map ? ρσ_Iter259.keys() : ρσ_Iter259) : Object.keys(ρσ_Iter259));
             for (var ρσ_Index259 of ρσ_Iter259) {
                 sz = ρσ_Index259;
@@ -41474,13 +41537,11 @@ return this.__repr__();
         });
 
         function create_main_overlay_footer(close_action, help_action) {
-            var middle, right, footer;
-            middle = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([ MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_MIDDLE_SLOT_CLASS ])})]));
-            right = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([ MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_RIGHT_SLOT_CLASS ])})]));
-            footer = ρσ_interpolate_kwargs.call(E, E.div, [ρσ_interpolate_kwargs.call(E, E.div, [create_main_overlay_footer_action("close", _("Close"), _("Close the viewer controls"), close_action), create_main_overlay_footer_action("help", _("Help"), _("Show viewer help"), help_action)].concat([ρσ_desugar_kwargs({class_: MAIN_OVERLAY_FOOTER_ACTIONS_CLASS})])), middle, right].concat([ρσ_desugar_kwargs({class_: MAIN_OVERLAY_FOOTER_CLASS})]));
-            return (function(){
+            var middle = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_MIDDLE_SLOT_CLASS])})]));
+            var right = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_RIGHT_SLOT_CLASS])})]));
+            return (function () {
                 var ρσ_d = Object.create(null);
-                ρσ_d["footer"] = footer;
+                ρσ_d["footer"] = middle;
                 ρσ_d["middle_slot"] = middle;
                 ρσ_d["right_slot"] = right;
                 return ρσ_d;
@@ -41597,10 +41658,32 @@ return this.__repr__();
             } else {
                 reload_actions = E.ul(sync_action, delete_action, reload_action);
             }
-            bookmarks_action = ac(_("Bookmarks"), _("Browse all bookmarks"), self.overlay.show_bookmarks, "bookmark");
+            bookmarks_action = ac(_("Bookmarks"), _("Browse all bookmarks"), (function () {
+                var ρσ_anonfunc = function () {
+                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_bookmarks === "function") {
+                        ui_operations.toggle_bookmarks();
+                    } else {
+                        window.setTimeout(function () {
+                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_bookmarks === "function") {
+                                ui_operations.toggle_bookmarks();
+                            }
+                        }, 0);
+                    }
+                };
+                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, { __module__ : {value: "read_book.overlay"} });
+                return ρσ_anonfunc;
+            })(), "bookmark");
             highlights_action = ac(_("Highlights"), _("Browse all highlights"), (function() {
                 var ρσ_anonfunc = function () {
-                    self.overlay.show_highlights();
+                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {
+                        ui_operations.toggle_highlights();
+                    } else {
+                        window.setTimeout(function () {
+                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {
+                                ui_operations.toggle_highlights();
+                            }
+                        }, 0);
+                    }
                 };
                 if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
                     __module__ : {value: "read_book.overlay"}
@@ -41618,7 +41701,14 @@ return this.__repr__();
             })(), "hourglass");
             toc_actions = E.ul(ac(_("Table of Contents"), _("Browse the Table of Contents"), self.overlay.show_toc, "toc"));
             toc_actions.appendChild(ac(_("Reference mode"), _("Toggle the Reference mode"), self.overlay.toggle_reference_mode, "reference-mode"));
-            actions_div = ρσ_interpolate_kwargs.call(E, E.div, [nav_actions, E.ul(ac(_("Search"), _("Search for text in this book"), self.overlay.show_search, "search"), ac(_("Go to"), _("Go to a specific location in the book"), self.overlay.show_goto, "chevron-right")), reload_actions, toc_actions, E.ul(highlights_action, bookmarks_action, reading_stats_action), E.ul(text_ac(_("Font size"), _("Change text size"), self.overlay.show_font_size_chooser, "Aa"), ac(_("Preferences"), _("Configure the E-book viewer"), self.overlay.show_prefs, "cogs"))].concat([ρσ_desugar_kwargs({class_: MAIN_OVERLAY_ACTIONS_CLASS})]));
+            actions_div = ρσ_interpolate_kwargs.call(E, E.div, [nav_actions, E.ul(ac(_("Search"), _("Search for text in this book"), self.overlay.show_search, "search"), ac(_("Go to"), _("Go to a specific location in the book"), self.overlay.show_goto, "chevron-right")), reload_actions, toc_actions, E.ul(highlights_action, bookmarks_action, ac(_("Bookmark this page"), _("Add a bookmark to the current page"), (function () {
+                var ρσ_anonfunc = function () {
+                    self.overlay.hide();
+                    self.overlay.view.new_bookmark();
+                };
+                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, { __module__ : {value: "read_book.overlay"} });
+                return ρσ_anonfunc;
+            })(), "plus"), reading_stats_action), E.ul(text_ac(_("Font size"), _("Change text size"), self.overlay.show_font_size_chooser, "Aa"), ac(_("Preferences"), _("Configure the E-book viewer"), self.overlay.show_prefs, "cogs"))].concat([ρσ_desugar_kwargs({class_: MAIN_OVERLAY_ACTIONS_CLASS})]));
             if (!runtime.is_standalone_viewer) {
                 home_action = ac(_("Home"), _("Return to the home page"), (function() {
                     var ρσ_anonfunc = function () {
@@ -41635,40 +41725,6 @@ return this.__repr__();
                 actions_div.insertBefore(E.ul(home_action, library_action, book_action), actions_div.firstChild);
             }
             full_screen_actions = [];
-            if (runtime.is_standalone_viewer) {
-                text = (runtime.viewer_in_full_screen) ? _("Exit full screen") : _("Enter full screen");
-                full_screen_actions.push(ac(text, _("Toggle full screen mode"), (function() {
-                    var ρσ_anonfunc = function () {
-                        [self.overlay.hide(), ui_operations.toggle_full_screen()];
-                    };
-                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                        __module__ : {value: "read_book.overlay"}
-                    });
-                    return ρσ_anonfunc;
-                })(), "full-screen"));
-                full_screen_actions.push(ac(_("Print"), _("Print book to PDF"), (function() {
-                    var ρσ_anonfunc = function () {
-                        [self.overlay.hide(), ui_operations.print_book()];
-                    };
-                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                        __module__ : {value: "read_book.overlay"}
-                    });
-                    return ρσ_anonfunc;
-                })(), "print"));
-            } else {
-                if (!is_ios && full_screen_supported()) {
-                    text = (full_screen_element()) ? _("Exit full screen") : _("Enter full screen");
-                    full_screen_actions.push(ac(text, _("Toggle full screen mode"), (function() {
-                        var ρσ_anonfunc = function () {
-                            [self.overlay.hide(), ui_operations.toggle_full_screen()];
-                        };
-                        if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                            __module__ : {value: "read_book.overlay"}
-                        });
-                        return ρσ_anonfunc;
-                    })(), "full-screen"));
-                }
-            }
             if (sd.get("read_mode") === "flow") {
                 asa = self.overlay.view.autoscroll_active;
                 full_screen_actions.append(ac((asa) ? _("Stop auto scroll") : _("Auto scroll"), _("Toggle auto-scrolling"), (function() {
@@ -41682,18 +41738,17 @@ return this.__repr__();
                     return ρσ_anonfunc;
                 })(), "auto-scroll"));
             }
-            actions_div.appendChild(E.ul(ac(_("Read aloud"), _("Read the book aloud"), (function() {
+            actions_div.appendChild(E.ul(ac(_("Profiles"), _("Quickly switch between different settings"), (function() {
                 var ρσ_anonfunc = function () {
-                    self.overlay.hide();
-                    self.overlay.view.start_read_aloud();
-                };
-                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                    __module__ : {value: "read_book.overlay"}
-                });
-                return ρσ_anonfunc;
-            })(), "bullhorn"), ac(_("Profiles"), _("Quickly switch between different settings"), (function() {
-                var ρσ_anonfunc = function () {
-                    self.overlay.show_profiles();
+                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {
+                        ui_operations.toggle_profiles();
+                    } else {
+                        window.setTimeout(function () {
+                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {
+                                ui_operations.toggle_profiles();
+                            }
+                        }, 0);
+                    }
                 };
                 if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
                     __module__ : {value: "read_book.overlay"}
@@ -41751,38 +41806,7 @@ return this.__repr__();
                 if (copy_actions.childNodes.length) {
                     actions_div.appendChild(copy_actions);
                 }
-                actions_div.appendChild(E.ul(ac(_("Inspector"), _("Show the content inspector"), (function() {
-                    var ρσ_anonfunc = function () {
-                        [self.overlay.hide(), ui_operations.toggle_inspector()];
-                    };
-                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                        __module__ : {value: "read_book.overlay"}
-                    });
-                    return ρσ_anonfunc;
-                })(), "bug"), ac(_("Reset interface"), _("Reset E-book viewer panels, toolbars and scrollbars to defaults"), (function() {
-                    var ρσ_anonfunc = function () {
-                        question_dialog(_("Are you sure?"), _("Are you sure you want to reset the viewer interface to its default appearance?"), (function() {
-                            var ρσ_anonfunc = function (yes) {
-                                var sd;
-                                if (yes) {
-                                    self.overlay.hide();
-                                    ui_operations.reset_interface();
-                                    sd = get_session_data();
-                                    sd.set("skipped_dialogs", session_defaults().skipped_dialogs);
-                                }
-                            };
-                            if (!ρσ_anonfunc.__argnames__) Object.defineProperties(ρσ_anonfunc, {
-                                __argnames__ : {value: ["yes"]},
-                                __module__ : {value: "read_book.overlay"}
-                            });
-                            return ρσ_anonfunc;
-                        })());
-                    };
-                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
-                        __module__ : {value: "read_book.overlay"}
-                    });
-                    return ρσ_anonfunc;
-                })(), "window-restore"), ac(_("Quit"), _("Close the E-book viewer"), (function() {
+                actions_div.appendChild(E.ul(ac(_("Quit"), _("Close the E-book viewer"), (function() {
                     var ρσ_anonfunc = function () {
                         [self.overlay.hide(), ui_operations.quit()];
                     };
@@ -41830,6 +41854,18 @@ return this.__repr__();
                     actions_div.appendChild(copy_actions);
                 }
             }
+            (function () {
+                var uls = actions_div.querySelectorAll("ul");
+                for (var i = 0; i < uls.length; i++) {
+                    var ul = uls[i];
+                    while (ul.firstChild) {
+                        actions_div.appendChild(ul.firstChild);
+                    }
+                    if (ul.parentNode) {
+                        ul.parentNode.removeChild(ul);
+                    }
+                }
+            })();
             return actions_div;
         };
         if (!MainOverlay.prototype.create_actions.__argnames__) Object.defineProperties(MainOverlay.prototype.create_actions, {
@@ -41964,6 +42000,10 @@ return this.__repr__();
         SimpleOverlay.__handles_kwarg_interpolation__ = SimpleOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         SimpleOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
+            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
+                return;
+            }
+            self.overlay.hide_current_panel();
         };
         if (!SimpleOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(SimpleOverlay.prototype.on_container_click, {
             __argnames__ : {value: ["evt"]},
@@ -42066,6 +42106,10 @@ return this.__repr__();
         GotoOverlay.__handles_kwarg_interpolation__ = GotoOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         GotoOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
+            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
+                return;
+            }
+            self.overlay.hide_current_panel();
         };
         if (!GotoOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(GotoOverlay.prototype.on_container_click, {
             __argnames__ : {value: ["evt"]},
@@ -42189,6 +42233,10 @@ return this.__repr__();
         PrefsOverlay.__handles_kwarg_interpolation__ = PrefsOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         PrefsOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
+            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
+                return;
+            }
+            self.overlay.hide_current_panel();
         };
         if (!PrefsOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(PrefsOverlay.prototype.on_container_click, {
             __argnames__ : {value: ["evt"]},
@@ -42353,6 +42401,13 @@ return this.__repr__();
         });
         OpenBook.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
+            if (!self.closeable) {
+                return;
+            }
+            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
+                return;
+            }
+            self.overlay.hide_current_panel();
         };
         if (!OpenBook.prototype.on_container_click.__argnames__) Object.defineProperties(OpenBook.prototype.on_container_click, {
             __argnames__ : {value: ["evt"]},
@@ -42413,6 +42468,10 @@ return this.__repr__();
         ReadingStatsOverlay.__handles_kwarg_interpolation__ = ReadingStatsOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         ReadingStatsOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
+            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
+                return;
+            }
+            self.overlay.hide_current_panel();
         };
         if (!ReadingStatsOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(ReadingStatsOverlay.prototype.on_container_click, {
             __argnames__ : {value: ["evt"]},
@@ -47194,10 +47253,26 @@ return this.__repr__();
                 } else {
                     self.overlay.show_bookmarks();
                 }
-            } else if (data.name === "show_profiles") {
-                self.overlay.show_profiles();
+            } else if (data.name === "toggle_profiles") {
+                if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {
+                    ui_operations.toggle_profiles();
+                } else {
+                    window.setTimeout(function () {
+                        if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {
+                            ui_operations.toggle_profiles();
+                        }
+                    }, 0);
+                }
             } else if (data.name === "toggle_highlights") {
-                ui_operations.toggle_highlights();
+                if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {
+                    ui_operations.toggle_highlights();
+                } else {
+                    window.setTimeout(function () {
+                        if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {
+                            ui_operations.toggle_highlights();
+                        }
+                    }, 0);
+                }
             } else if (data.name === "new_bookmark") {
                 self.new_bookmark();
             } else if (data.name === "copy_to_clipboard") {
@@ -49980,7 +50055,31 @@ return this.__repr__();
                 window.calibre_translations_data = null;
             }
             ui_operations.get_all_profiles = get_all_profiles;
-            ui_operations.save_profile = save_profile;
+            // Android host override: forward save/delete to the host
+            // ProfileStore via profile_op; the original JS save still
+            // runs alongside so the inline "Saved: <name>" confirmation
+            // renders for the JS panel.
+            ui_operations.save_profile = (function () {
+                var orig = save_profile;
+                var host_save = function (container_id, hide_panel) {
+                    var container = document.getElementById(container_id);
+                    if (!container) { return; }
+                    var name = container.querySelector("[name=profile_name]").value;
+                    var sd = get_session_data();
+                    var settings = settings_for_reader_profile(sd);
+                    var payload = (settings === null) ? null : settings;
+                    to_python.profile_op("save-profile", name, payload);
+                };
+                var wrap = function (container_id, hide_panel) {
+                    host_save(container_id, hide_panel);
+                    return orig.apply(this, arguments);
+                };
+                if (!wrap.__argnames__) Object.defineProperties(wrap, {
+                    __argnames__ : {value: ["container_id", "hide_panel"]},
+                    __module__ : {value: "read_book.profiles"}
+                });
+                return wrap;
+            })();
             ui_operations.apply_profile = (function() {
                 var ρσ_anonfunc = function (profile) {
                     to_python.profile_op("apply-profile-to-viewer-ui", "", profile);
@@ -50112,6 +50211,15 @@ return this.__repr__();
             ui_operations.toggle_highlights = (function() {
                 var ρσ_anonfunc = function () {
                     to_python.toggle_highlights();
+                };
+                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
+                    __module__ : {value: null}
+                });
+                return ρσ_anonfunc;
+            })();
+            ui_operations.toggle_profiles = (function() {
+                var ρσ_anonfunc = function () {
+                    to_python.toggle_profiles();
                 };
                 if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {
                     __module__ : {value: null}

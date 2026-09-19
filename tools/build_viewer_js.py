@@ -4,7 +4,7 @@
 Build viewer.js (and friends) from a calibre source checkout for the Android app.
 
 Mirrors calibre's `compile_viewer()` (src/calibre/utils/rapydscript.py:660) with
-two deliberate divergences, applied via the set_data placeholder map:
+three deliberate divergences, applied via the set_data placeholder map:
 
     __FAKE_PROTOCOL__  -> https
     __FAKE_HOST__      -> appassets.androidplatform.net
@@ -12,6 +12,10 @@ two deliberate divergences, applied via the set_data placeholder map:
          viewer-main.pyj, matching the hosts our WebViewClient intercepts)
     __EDITABLE_FORMATS__ -> []
         (no book editing on Android; hides the "edit book" affordances)
+    runtime.is_standalone_viewer -> true
+        (no calibre library to open a book from, no Qt host listening for
+         overlay actions; setting this makes the JS delegate show_search,
+         prefs, goto etc. through ui_operations instead of in-page overlays)
 
 and two Android WebView compatibility adaptations:
 
@@ -265,6 +269,624 @@ def main() -> None:
         '<script>window.calibre_translations_data=null</script>'
         f'</head><body>{icons}<script src="/viewer.js"></script></body></html>'
     )
+
+    # We run as a standalone viewer (no calibre library, no Qt host).
+    # The runtime object in viewer.js hard-codes is_standalone_viewer=false
+    # because upstream ships a Qt browser shim that drives it; flipping it
+    # makes the JS delegate overlays back to ui_operations — the bridge
+    # channel the Android side uses for show_search, toggle_toc, prefs etc.
+    if 'is_standalone_viewer"] = false' in js:
+        js = js.replace('is_standalone_viewer"] = false', 'is_standalone_viewer"] = true', 1)
+
+    # ---- toolbar actions: re-route Highlights / Bookmarks / Profiles / Bookmark this page to the host ----
+    # Upstream wires these to JS-side overlays (bookmarks overlay, profiles
+    # overlay, etc.). The host is the source of truth, so re-route each to
+    # its ui_operations handler. Idempotent: each replacement only fires on
+    # the original upstream literal.
+
+    # Highlights toolbar item → ui_operations.toggle_highlights (with setTimeout fallback for late IIFE binds).
+    if 'ac(_("Highlights"), _("Browse all highlights"), (function() {\n' in js and 'ui_operations.toggle_highlights' not in js.split('ac(_("Highlights")', 1)[1].split('})(), "image");', 1)[0]:
+        js = js.replace(
+            'ac(_("Highlights"), _("Browse all highlights"), (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    self.overlay.show_highlights();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: "read_book.overlay"}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "image");',
+            'ac(_("Highlights"), _("Browse all highlights"), (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {\n'
+            '                        ui_operations.toggle_highlights();\n'
+            '                    } else {\n'
+            '                        window.setTimeout(function () {\n'
+            '                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_highlights === "function") {\n'
+            '                                ui_operations.toggle_highlights();\n'
+            '                            }\n'
+            '                        }, 0);\n'
+            '                    }\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: "read_book.overlay"}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "image");',
+            1,
+        )
+
+    # Bookmarks toolbar item → ui_operations.toggle_bookmarks. Upstream
+    # uses a direct method ref here (no IIFE), unlike Highlights/Profiles;
+    # keep the `ac(...)` wrapper intact and only replace the inner arg.
+    bookmarks_anchor = 'bookmarks_action = ac(_("Bookmarks")'
+    if bookmarks_anchor in js:
+        bookmarks_block = js.split(bookmarks_anchor, 1)[1].split(', reading_stats_action', 1)[0]
+        if 'self.overlay.show_bookmarks, "bookmark");' in bookmarks_block and 'ui_operations.toggle_bookmarks' not in bookmarks_block:
+            js = js.replace(
+                'ac(_("Bookmarks"), _("Browse all bookmarks"), self.overlay.show_bookmarks, "bookmark");',
+                'ac(_("Bookmarks"), _("Browse all bookmarks"), (function () {\n'
+                '                var ρσ_anonfunc = function () {\n'
+                '                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_bookmarks === "function") {\n'
+                '                        ui_operations.toggle_bookmarks();\n'
+                '                    } else {\n'
+                '                        window.setTimeout(function () {\n'
+                '                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_bookmarks === "function") {\n'
+                '                                ui_operations.toggle_bookmarks();\n'
+                '                            }\n'
+                '                        }, 0);\n'
+                '                    }\n'
+                '                };\n'
+                '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, { __module__ : {value: "read_book.overlay"} });\n'
+                '                return ρσ_anonfunc;\n'
+                '            })(), "bookmark");',
+                1,
+            )
+
+    # "Bookmark this page" toolbar item — inserts a new action between
+    # bookmarks_action and reading_stats_action. Idempotent: only when the
+    # original `bookmarks_action, reading_stats_action` adjacent pair is
+    # present.
+    if ', bookmarks_action, reading_stats_action' in js and 'Bookmark this page' not in js:
+        js = js.replace(
+            'bookmarks_action, reading_stats_action',
+            'bookmarks_action, ac(_("Bookmark this page"), _("Add a bookmark to the current page"), (function () {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    self.overlay.hide();\n'
+            '                    self.overlay.view.new_bookmark();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, { __module__ : {value: "read_book.overlay"} });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "plus"), reading_stats_action',
+            1,
+        )
+
+    # Profiles toolbar item → ui_operations.toggle_profiles (host ProfileStore
+    # is the source of truth; the JS ProfilesOverlay reads a JS-local list).
+    # Upstream wraps this `ac(...)` in `actions_div.appendChild(E.ul(...))`,
+    # which yields THREE closing parens on the call site — match the
+    # surrounding literal and rewrite the inner handler only.
+    if 'ac(_("Profiles"), _("Quickly switch between different settings"), (function() {\n' in js and 'ui_operations.toggle_profiles' not in js.split('ac(_("Profiles")', 1)[1].split('})(), "convert")));', 1)[0]:
+        js = js.replace(
+            'ac(_("Profiles"), _("Quickly switch between different settings"), (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    self.overlay.show_profiles();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: "read_book.overlay"}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "convert")));',
+            'ac(_("Profiles"), _("Quickly switch between different settings"), (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {\n'
+            '                        ui_operations.toggle_profiles();\n'
+            '                    } else {\n'
+            '                        window.setTimeout(function () {\n'
+            '                            if (typeof ui_operations !== "undefined" && typeof ui_operations.toggle_profiles === "function") {\n'
+            '                                ui_operations.toggle_profiles();\n'
+            '                            }\n'
+            '                        }, 0);\n'
+            '                    }\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: "read_book.overlay"}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "convert")));',
+            1,
+        )
+
+    # ---- handle_shortcut: re-route toggle_bookmarks / toggle_highlights / show_profiles ----
+    def shortcut_redirect(op: str) -> str:
+        return (
+            '            } else if (data.name === "%s") {\n'
+            '                if (typeof ui_operations !== "undefined" && typeof ui_operations.%s === "function") {\n'
+            '                    ui_operations.%s();\n'
+            '                } else {\n'
+            '                    window.setTimeout(function () {\n'
+            '                        if (typeof ui_operations !== "undefined" && typeof ui_operations.%s === "function") {\n'
+            '                            ui_operations.%s();\n'
+            '                        }\n'
+            '                    }, 0);\n'
+            '                }'
+        ) % (op, op, op, op, op)
+
+    if 'data.name === "toggle_bookmarks"' in js:
+        js = js.replace(
+            '            } else if (data.name === "toggle_bookmarks") {\n                ui_operations.toggle_bookmarks();',
+            shortcut_redirect('toggle_bookmarks'),
+            1,
+        )
+
+    if 'data.name === "show_profiles"' in js and 'self.overlay.show_profiles();' in js:
+        js = js.replace(
+            '            } else if (data.name === "show_profiles") {\n                self.overlay.show_profiles();',
+            shortcut_redirect('toggle_profiles'),
+            1,
+        )
+
+    if 'data.name === "toggle_highlights"' in js:
+        js = js.replace(
+            '            } else if (data.name === "toggle_highlights") {\n                ui_operations.toggle_highlights();',
+            shortcut_redirect('toggle_highlights'),
+            1,
+        )
+
+    # ---- blank-tap closes secondary panels ----
+    # Overlay.container_clicked dispatches to the current panel's
+    # on_container_click when the panel defines one; MainOverlay (the top
+    # menu) doesn't, so blank-area taps fall through to hide_current_panel()
+    # and the menu closes. Upstream defines the secondary panels'
+    # on_container_click as an empty no-op (desktop habit), which swallows
+    # blank taps on touch. Give them the MainOverlay behaviour, but ignore
+    # taps that landed on interactive content — those bubble up from form
+    # controls to the container and must not dismiss. The guard selector
+    # covers every clickable thing these panels render: form controls and
+    # tables (Go to / prefs sub-pages), <a class="calibre-push-button"> push
+    # buttons (create_button), <li> item-list rows (build_list attaches the
+    # row action to the li — prefs categories, open-book recents, profiles),
+    # <option> font-size quick marks (set_quick_size keeps the panel open),
+    # svg bar charts (reading statistics) and the .main-top-bar close row.
+    def blank_tap_close(cls: str, preguard: str = '') -> tuple[str, str]:
+        old = (
+            f'        {cls}.prototype.on_container_click = function on_container_click(evt) {{\n'
+            f'            var self = this;\n'
+            f'        }};'
+        )
+        new = (
+            f'        {cls}.prototype.on_container_click = function on_container_click(evt) {{\n'
+            f'            var self = this;\n'
+            f'{preguard}'
+            f'            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {{\n'
+            f'                return;\n'
+            f'            }}\n'
+            f'            self.overlay.hide_current_panel();\n'
+            f'        }};'
+        )
+        return old, new
+
+    for _cls in ('GotoOverlay', 'SimpleOverlay', 'PrefsOverlay', 'ReadingStatsOverlay'):
+        _old, _new = blank_tap_close(_cls)
+        if _old in js:
+            js = js.replace(_old, _new, 1)
+
+    # OpenBook: same blank-tap close, but only when a book is open behind it
+    # (closeable=true — the toolbar "Open book" item). On the home page
+    # (closeable=false) the panel is the only content; hiding it would leave
+    # a blank screen, so keep the upstream no-op there.
+    _old, _new = blank_tap_close('OpenBook', preguard='            if (!self.closeable) {\n                return;\n            }\n')
+    if _old in js:
+        js = js.replace(_old, _new, 1)
+
+    # ---- toolbar layout: flatten the per-group <ul> wrappers ----
+    # create_actions groups the buttons into several <ul> chunks (nav,
+    # search/goto, reload, toc, bookmarks…, font/prefs, profiles, quit).
+    # Under flex-wrap a row can only break between <ul>s, so some rows end
+    # up sparse and others crowded. Lift every <li> out of its <ul> so all
+    # buttons become direct children of the actions div and wrap
+    # button-by-button (rows fill evenly). DOM-level, so it works on old
+    # e-ink WebViews that lack display:contents.
+    create_actions_return_literal = (
+        '            return actions_div;\n'
+        '        };\n'
+        '        if (!MainOverlay.prototype.create_actions.__argnames__) Object.defineProperties(MainOverlay.prototype.create_actions, {'
+    )
+    create_actions_return_replacement = (
+        '            (function () {\n'
+        '                var uls = actions_div.querySelectorAll("ul");\n'
+        '                for (var i = 0; i < uls.length; i++) {\n'
+        '                    var ul = uls[i];\n'
+        '                    while (ul.firstChild) {\n'
+        '                        actions_div.appendChild(ul.firstChild);\n'
+        '                    }\n'
+        '                    if (ul.parentNode) {\n'
+        '                        ul.parentNode.removeChild(ul);\n'
+        '                    }\n'
+        '                }\n'
+        '            })();\n'
+        '            return actions_div;\n'
+        '        };\n'
+        '        if (!MainOverlay.prototype.create_actions.__argnames__) Object.defineProperties(MainOverlay.prototype.create_actions, {'
+    )
+    if create_actions_return_literal in js:
+        js = js.replace(create_actions_return_literal, create_actions_return_replacement, 1)
+
+    # ---- menu cleanup: drop Full Screen, Print, Inspector, bottom Close/Help ----
+    # Out of scope for the e-ink reader. Each deletion uses a concrete
+    # upstream-anchored string; idempotent (matches only when the literal
+    # is still present).
+
+    # Drop the entire standalone-viewer Full Screen + Print block, plus
+    # the else-branch desktop Full Screen block. Keep the autoscroll push
+    # that follows. The exact upstream shape (line numbers vary across
+    # calibre revisions, so we anchor on the trailing `full_screen_actions.push(ac(_("Print")`).
+    standalone_fullscreen_block = (
+        '            full_screen_actions = [];\n'
+        '            if (runtime.is_standalone_viewer) {\n'
+        '                text = (runtime.viewer_in_full_screen) ? _("Exit full screen") : _("Enter full screen");\n'
+        '                full_screen_actions.push(ac(text, _("Toggle full screen mode"), (function() {\n'
+        '                    var ρσ_anonfunc = function () {\n'
+        '                        [self.overlay.hide(), ui_operations.toggle_full_screen()];\n'
+        '                    };\n'
+        '                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                        __module__ : {value: "read_book.overlay"}\n'
+        '                    });\n'
+        '                    return ρσ_anonfunc;\n'
+        '                })(), "full-screen"));\n'
+        '                full_screen_actions.push(ac(_("Print"), _("Print book to PDF"), (function() {\n'
+        '                    var ρσ_anonfunc = function () {\n'
+        '                        [self.overlay.hide(), ui_operations.print_book()];\n'
+        '                    };\n'
+        '                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                        __module__ : {value: "read_book.overlay"}\n'
+        '                    });\n'
+        '                    return ρσ_anonfunc;\n'
+        '                })(), "print"));\n'
+        '            } else {\n'
+        '                if (!is_ios && full_screen_supported()) {\n'
+        '                    text = (full_screen_element()) ? _("Exit full screen") : _("Enter full screen");\n'
+        '                    full_screen_actions.push(ac(text, _("Toggle full screen mode"), (function() {\n'
+        '                        var ρσ_anonfunc = function () {\n'
+        '                            [self.overlay.hide(), ui_operations.toggle_full_screen()];\n'
+        '                        };\n'
+        '                        if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                            __module__ : {value: "read_book.overlay"}\n'
+        '                        });\n'
+        '                        return ρσ_anonfunc;\n'
+        '                    })(), "full-screen"));\n'
+        '                }\n'
+        '            }\n'
+    )
+    if 'full_screen_actions = [];' in js and 'full_screen_actions.push(ac(_("Print")' in js:
+        js = js.replace(standalone_fullscreen_block, '            full_screen_actions = [];\n', 1)
+
+    # Drop BOTH the Inspector and Reset interface entries from the
+    # standalone footer E.ul(...). The only survivor is the Quit item that
+    # follows. Match a literal block anchored on the leading
+    # `actions_div.appendChild(E.ul(ac(_("Inspector")...` so this only fires
+    # on the unpatched upstream build (idempotent).
+    inspector_and_reset_literal = (
+        '                actions_div.appendChild(E.ul(ac(_("Inspector"), _("Show the content inspector"), (function() {\n'
+        '                    var ρσ_anonfunc = function () {\n'
+        '                        [self.overlay.hide(), ui_operations.toggle_inspector()];\n'
+        '                    };\n'
+        '                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                        __module__ : {value: "read_book.overlay"}\n'
+        '                    });\n'
+        '                    return ρσ_anonfunc;\n'
+        '                })(), "bug"), ac(_("Reset interface"), _("Reset E-book viewer panels, toolbars and scrollbars to defaults"), (function() {\n'
+        '                    var ρσ_anonfunc = function () {\n'
+        '                        question_dialog(_("Are you sure?"), _("Are you sure you want to reset the viewer interface to its default appearance?"), (function() {\n'
+        '                            var ρσ_anonfunc = function (yes) {\n'
+        '                                var sd;\n'
+        '                                if (yes) {\n'
+        '                                    self.overlay.hide();\n'
+        '                                    ui_operations.reset_interface();\n'
+        '                                    sd = get_session_data();\n'
+        '                                    sd.set("skipped_dialogs", session_defaults().skipped_dialogs);\n'
+        '                                }\n'
+        '                            };\n'
+        '                            if (!ρσ_anonfunc.__argnames__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                                __argnames__ : {value: ["yes"]},\n'
+        '                                __module__ : {value: "read_book.overlay"}\n'
+        '                            });\n'
+        '                            return ρσ_anonfunc;\n'
+        '                        })());\n'
+        '                    };\n'
+        '                    if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+        '                        __module__ : {value: "read_book.overlay"}\n'
+        '                    });\n'
+        '                    return ρσ_anonfunc;\n'
+        '                })(), "window-restore"), ac(_("Quit")'
+    )
+    if inspector_and_reset_literal in js:
+        js = js.replace(
+            inspector_and_reset_literal,
+            '                actions_div.appendChild(E.ul(ac(_("Quit")',
+            1,
+        )
+
+    # Drop the entire create_main_overlay_footer footer shell — there is no
+    # bottom Close/Help on Android. Replace with empty-body stub so callers
+    # that reference the function still get the closure return value.
+    if 'create_main_overlay_footer_action("close"' in js:
+        js = re.sub(
+            r'        function create_main_overlay_footer\(close_action, help_action\) \{.*?\n        \};',
+            '        function create_main_overlay_footer(close_action, help_action) {\n'
+            '            var middle = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_MIDDLE_SLOT_CLASS])})]));\n'
+            '            var right = ρσ_interpolate_kwargs.call(E, E.div, [" "].concat([ρσ_desugar_kwargs({class_: " ".join([MAIN_OVERLAY_FOOTER_SLOT_CLASS, MAIN_OVERLAY_FOOTER_RIGHT_SLOT_CLASS])})]));\n'
+            '            return (function () {\n'
+            '                var ρσ_d = Object.create(null);\n'
+            '                ρσ_d["footer"] = middle;\n'
+            '                ρσ_d["middle_slot"] = middle;\n'
+            '                ρσ_d["right_slot"] = right;\n'
+            '                return ρσ_d;\n'
+            '            }).call(this);\n'
+            '        };',
+            js,
+            count=1,
+            flags=re.DOTALL,
+        )
+
+    # ---- recents list cap: 25 → 20 ----
+    js = js.replace('sd.set("standalone_recently_opened", ans.slice(0, 25));',
+                    'sd.set("standalone_recently_opened", ans.slice(0, 20));', 1)
+
+    # ---- font-size chooser: 7 marks, range 8–56, linear step ----
+    # Replaces upstream's [10, 12, 14, 16, 18, 20, 22] (narrow 10–22 range)
+    # with [8, 16, 24, 32, 40, 48, 56] (7 marks, min 8, max 56). Anchored by
+    # the VALUE LIST, not the ρσ_Iter<N> name — that counter is compiler-
+    # generated and shifts between calibre checkouts, which would make an
+    # exact-match anchor silently no-op. Idempotent: the pattern only
+    # matches the original 7-value literal.
+    js, _marks_patched = re.subn(
+        r'(var ρσ_Iter\d+ = \[) 10, 12, 14, 16, 18, 20, 22 (\];)',
+        r'\g<1> 8, 16, 24, 32, 40, 48, 56 \g<2>',
+        js,
+        count=1,
+    )
+
+    # ---- default base_font_size: 32 (was 16) for the Android reader ----
+    # The page's standalone_font_settings["base_font_size"].default is the
+    # starting font size used by Viewer.bump_font_size and the Font size
+    # chooser. Bumping it from 16 to 32 makes the page text start at 2× the
+    # platform default (the WebView sets a 10pt base; 32px ≈ 24pt rendered,
+    # comfortable for e-ink readers). Idempotent by anchor literal.
+    base_font_default_literal = '            ρσ_d["base_font_size"] = (function(){\n                var ρσ_d = Object.create(null);\n                ρσ_d["default"] = 16;\n                ρσ_d["category"] = "read_book";\n                ρσ_d["is_local"] = true;\n                return ρσ_d;\n            }).call(this);'
+    base_font_default_replacement = '            ρσ_d["base_font_size"] = (function(){\n                var ρσ_d = Object.create(null);\n                ρσ_d["default"] = 32;\n                ρσ_d["category"] = "read_book";\n                ρσ_d["is_local"] = true;\n                return ρσ_d;\n            }).call(this);'
+    if base_font_default_literal in js:
+        js = js.replace(base_font_default_literal, base_font_default_replacement, 1)
+
+    # ---- global JS-side UI scale: 1.5× everything that viewer.js renders ----
+    # Native Compose panels are already scaled via UiScale.kt; this matches
+    # that for the toolbar overlay, prefs panel, search/lookup widgets,
+    # font-size marks, reading-stats overlay, profile overlay, etc. Inject
+    # through the same `add_extra_css(function(){ return "..." })` channel
+    # as the existing flex-wrap rule so it parses through `get_widget_css`.
+    # Idempotent by sentinel.
+    if '.read-book-main-overlay-actions,.read-book-main-overlay-actions>ul>li{font-size:1em !important;}' not in js:
+        # Strip any prior UI-scale injection (1.5em variants) so the new
+        # single-root rule can land cleanly on a fresh build.
+        js = re.sub(
+            r'        // __android_js_ui_scale__\n'
+            r'        add_extra_css\(function \(\) \{.*?\n        \}\);',
+            '',
+            js,
+            count=1,
+            flags=re.DOTALL,
+        )
+        ui_scale_rule = (
+            '        // __android_js_ui_scale__\n'
+            '        add_extra_css(function () {\n'
+            '            return [\n'
+            '                // Two independent 1.5× roots: #book-overlay (the Overlay\n'
+            '                // container getter — the home open-book page AND the reader\n'
+            '                // top-menu / secondary panels all render inside it) and the\n'
+            '                // body-level modal-container (popup dialogs). The toolbar\n'
+            '                // top-section is deliberately NOT a root: it is always a\n'
+            '                // descendant of #book-overlay, so scaling it here as well\n'
+            '                // would multiply (1.5 × 1.5). Every nested rule below uses\n'
+            '                // 1em so font-size inherits exactly once.\n'
+            '                "#book-overlay,.modal-container{font-size:1.5em !important;}",\n'
+            '                ".read-book-main-overlay-action-icon{width:1.5em !important;height:1.5em !important;}",\n'
+            '                // Each toolbar button (icon + label) — center them vertically\n'
+            '                // so the 175%-sized icon and the regular label align at\n'
+            '                // their middles, not their baselines (which made the row\n'
+            '                // blow up and the icon float above the text).\n'
+            '                ".read-book-main-overlay-action-control{display:inline-flex !important;align-items:center !important;justify-content:center !important;gap:0.4em !important;}",\n'
+            '                // The rest are 1em (or smaller structural touches) so they\n'
+            '                // inherit each root\'s 1.5× exactly once.\n'
+            '                ".read-book-main-overlay-actions,.read-book-main-overlay-actions>ul>li{font-size:1em !important;}",\n'
+            '                ".read-book-main-overlay-title{font-size:1em !important;}",\n'
+            '                ".read-book-main-overlay-top-row,.read-book-main-overlay-footer{font-size:1em !important;}",\n'
+            '                ".simple-panel{font-size:1em !important;}",\n'
+            '                // Every calibre push button (home pitch "Open a book", form OK/Cancel, etc.).\n'
+            '                ".calibre-push-button{font-size:1em !important;padding:0.5em 1em !important;}",\n'
+            '                // Standalone home open-book pitch + recents list rows + tree lists.\n'
+            '                ".calibre-container,.calibre-tree,.simple-tree,.tree-item-title,.simple-link{font-size:1em !important;}",\n'
+            '                // Title bar (used by home + every secondary page).\n'
+            '                ".main-top-bar,.top-bar-title{font-size:1em !important;}",\n'
+            '                // Modal dialogs (confirm/quit prompts).\n'
+            '                ".button-box{font-size:1em !important;}",\n'
+            '                // Font-size chooser marks: enlarge the Aa glyphs so each is tappable on e-ink.\n'
+            '                ".read-book-font-size-quick>option{padding:0.5em 0.6em !important;margin:0 0.25em !important;}",\n'
+            '                // Reading stats overlay + auto-scroll message use this class.\n'
+            '                ".read-book-overlay-aux-text{font-size:1em !important;}",\n'
+            '                // Form elements inside overlay containers (Go to, Preferences,\n'
+            '                // Font size, Reading statistics, Lookup). These have no stable\n'
+            '                // class — they\'re plain <input>/<select>/<button>/<td> elements.\n'
+            '                // Force them to inherit the 1.5× from the root and bump their\n'
+            '                // touch targets.\n'
+            '                "#book-overlay input,#book-overlay select,#book-overlay textarea,#book-overlay button,#book-overlay td,#book-overlay th,#book-overlay label,#book-overlay h1,#book-overlay h2,#book-overlay h3{font-size:1em !important;padding:0.25em 0.5em !important;}",\n'
+            '                ".modal-container input,.modal-container select,.modal-container textarea,.modal-container button,.modal-container td,.modal-container th,.modal-container label,.modal-container h1,.modal-container h2,.modal-container h3{font-size:1em !important;padding:0.25em 0.5em !important;}",\n'
+            '                // Generic fallback for any leftover viewer.js element.\n'
+            '                "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",\n'
+            '                // Universal bump: every non-input, non-script element inside\n'
+            '                // the reader containers inherits the root\'s 1.5× via this\n'
+            '                // 1em chain. Re-stating with the wildcard guarantees every\n'
+            '                // bare <div>/<span>/<td>/<li>/<a>/<button>/<p> gets the\n'
+            '                // inheritance — the only safe way to catch the no-class\n'
+            '                // elements (secondary-page forms, the open-book pitch, the\n'
+            '                // Go-to list rows, etc.).\n'
+            '                ".read-book-main-overlay-top-section *:not(input):not(select):not(textarea):not(script),#book-overlay *:not(input):not(select):not(textarea):not(script),.modal-container *:not(input):not(select):not(textarea):not(script){font-size:1em !important;}",\n'
+            '            ].join("\\n");\n'
+            '        });'
+        )
+        # Anchor on `add_extra_css(main_overlay_css);` (the always-present
+        # upstream call) and append BOTH the flex-wrap rule and the global
+        # JS-side UI scale rule in one replace, so we don't depend on the
+        # order of the two patch blocks below.
+        js = js.replace(
+            'add_extra_css(main_overlay_css);',
+            'add_extra_css(main_overlay_css);\n'
+            '        add_extra_css(function () {\n'
+            '            return [\n'
+            '                ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"\n'
+            '            ].join("");\n'
+            '        });\n' + ui_scale_rule,
+            1,
+        )
+
+    # ---- toolbar CSS: flex-wrap so action buttons flow into one line ----
+    if 'read-book-main-overlay-actions{display:flex' not in js:
+        js = js.replace(
+            'add_extra_css(main_overlay_css);',
+            'add_extra_css(main_overlay_css);\n'
+            '        add_extra_css(function () {\n'
+            '            return [\n'
+            '                ".read-book-main-overlay-actions{display:flex !important;flex-wrap:wrap !important;align-items:stretch !important;gap:0 !important;padding:0 4px !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-actions>ul{display:inline-flex !important;flex-wrap:wrap !important;flex:0 0 auto !important;min-width:0 !important;align-items:stretch !important;border:0 !important;border-bottom:0 !important;padding:0 !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-actions>ul>li,.read-book-main-overlay-actions>li{display:inline-flex !important;flex:0 0 auto !important;border:0 !important;margin:0 !important;}",\n'
+            '                ".read-book-main-overlay-action-control{padding:0.5em 1ex !important;}"\n'
+            '            ].join("");\n'
+            '        });',
+            1,
+        )
+
+    # ---- Read aloud removal ----
+    # Drop the "Read aloud" item from the toolbar actions list. Out of
+    # scope for the Android shell; would need AndroidTts reader-flow
+    # integration that punts to a follow-up milestone. Idempotent: the
+    # literal exists only in the unpatched upstream build. The block is
+    # wrapped in `actions_div.appendChild(E.ul(ac(...), <NEIGHBOR>))` — match
+    # just the Read aloud `ac(...)` plus the trailing comma and whitespace
+    # so the neighbor (Profiles) is not damaged.
+    if 'actions_div.appendChild(E.ul(ac(_("Read aloud")' in js:
+        # The block ends with `})(), "bullhorn"), ` (closing the ac() call,
+        # then the E.ul argument list's trailing comma). Drop exactly that.
+        read_aloud_ac = (
+            'ac(_("Read aloud"), _("Read the book aloud"), (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    self.overlay.hide();\n'
+            '                    self.overlay.view.start_read_aloud();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: "read_book.overlay"}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })(), "bullhorn"), '
+        )
+        js = js.replace(read_aloud_ac, '', 1)
+    # Also strip the single-letter shortcut entry (idempotent: only fires
+    # when the un-commented literal is present).
+    js = js.replace(
+        'ρσ_d["read_aloud"] = desc("Ctrl+s", "ui", _("Read aloud"));',
+        '// ρσ_d["read_aloud"] = desc("Ctrl+s", "ui", _("Read aloud"));  // removed for Android',
+        1,
+    )
+
+    # ---- ui_operations.toggle_profiles binding ----
+    # Upstream binds `ui_operations.toggle_bookmarks`, `toggle_highlights`,
+    # `toggle_toc` etc. via the same IIFE pattern, but does NOT bind
+    # `toggle_profiles` — that one is defined inside `ui_operations` only
+    # when the JS-side ProfilesOverlay is opened. The Android toolbar / shortcut
+    # patches therefore find `typeof ui_operations.toggle_profiles === "function"`
+    # always false and the panel never opens. Add the binding alongside
+    # toggle_highlights so the existing re-routes (toolbar item + handle_shortcut
+    # branch) can call it. Idempotent: the literal is unique.
+    if 'ui_operations.toggle_highlights = (function() {' in js and 'ui_operations.toggle_profiles = (function() {' not in js:
+        js = js.replace(
+            '            ui_operations.toggle_highlights = (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    to_python.toggle_highlights();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: null}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })();\n'
+            '            ui_operations.new_bookmark',
+            '            ui_operations.toggle_highlights = (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    to_python.toggle_highlights();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: null}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })();\n'
+            '            ui_operations.toggle_profiles = (function() {\n'
+            '                var ρσ_anonfunc = function () {\n'
+            '                    to_python.toggle_profiles();\n'
+            '                };\n'
+            '                if (!ρσ_anonfunc.__module__) Object.defineProperties(ρσ_anonfunc, {\n'
+            '                    __module__ : {value: null}\n'
+            '                });\n'
+            '                return ρσ_anonfunc;\n'
+            '            })();\n'
+            '            ui_operations.new_bookmark',
+            1,
+        )
+
+    # ---- JS-side profile save wrapper ----
+    # The JS ProfilesOverlay opens with `ui_operations.save_profile = save_profile`
+    # (a JS-local callback that prints "Saved: <name>" inline). Wrap it so
+    # every save/delete also forwards `to_python.profile_op("save-profile",
+    # name, settings)` to the host ProfileStore. Host is the source of
+    # truth; delete_profile on the JS side passes null as settings, which
+    # the host interprets as delete. Idempotent — only fires when the
+    # original assignment literal is still present in viewer.js.
+    if 'ui_operations.save_profile = save_profile;' in js:
+        js = js.replace(
+            (
+                '            ui_operations.get_all_profiles = get_all_profiles;\n'
+                '            ui_operations.save_profile = save_profile;'
+            ),
+            (
+                '            ui_operations.get_all_profiles = get_all_profiles;\n'
+                '            // Android host override: forward save/delete to the host\n'
+                '            // ProfileStore via profile_op; the original JS save still\n'
+                '            // runs alongside so the inline "Saved: <name>" confirmation\n'
+                '            // renders for the JS panel.\n'
+                '            ui_operations.save_profile = (function () {\n'
+                '                var orig = save_profile;\n'
+                '                var host_save = function (container_id, hide_panel) {\n'
+                '                    var container = document.getElementById(container_id);\n'
+                '                    if (!container) { return; }\n'
+                '                    var name = container.querySelector("[name=profile_name]").value;\n'
+                '                    var sd = get_session_data();\n'
+                '                    var settings = settings_for_reader_profile(sd);\n'
+                '                    var payload = (settings === null) ? null : settings;\n'
+                '                    to_python.profile_op("save-profile", name, payload);\n'
+                '                };\n'
+                '                var wrap = function (container_id, hide_panel) {\n'
+                '                    host_save(container_id, hide_panel);\n'
+                '                    return orig.apply(this, arguments);\n'
+                '                };\n'
+                '                if (!wrap.__argnames__) Object.defineProperties(wrap, {\n'
+                '                    __argnames__ : {value: ["container_id", "hide_panel"]},\n'
+                '                    __module__ : {value: "read_book.profiles"}\n'
+                '                });\n'
+                '                return wrap;\n'
+                '            })();'
+            ),
+            1,
+        )
+
 
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     (ASSET_DIR / 'viewer.js').write_text(js, encoding='utf-8')

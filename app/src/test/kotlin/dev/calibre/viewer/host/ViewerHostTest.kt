@@ -10,6 +10,7 @@ package dev.calibre.viewer.host
 
 import dev.calibre.viewer.bridge.JsRunner
 import dev.calibre.viewer.bridge.ViewerBridge
+import dev.calibre.viewer.core.annot.AnnotationsStore
 import dev.calibre.viewer.parser.dom.DomParser
 import dev.calibre.viewer.parser.render.RenderBookCache
 import dev.calibre.viewer.serve.AssetSource
@@ -17,6 +18,8 @@ import dev.calibre.viewer.serve.BookServer
 import dev.calibre.viewer.serve.ServeResult
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.test.Test
@@ -25,9 +28,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.xmlpull.v1.XmlPullParserFactory
@@ -99,11 +104,12 @@ class ViewerHostTest {
         js: FakeJs,
         hostUi: FakeHostUi,
         attach: Boolean = true,
+        io: CoroutineDispatcher = Dispatchers.Unconfined,
     ): ViewerController {
         val controller = ViewerController(
             filesDir = File(root, "files"),
             cacheDir = File(root, "cache"),
-            ioDispatcher = Dispatchers.Unconfined,
+            ioDispatcher = io,
             scope = CoroutineScope(Job() + Dispatchers.Unconfined),
             assets = AssetSource { null },
             fieldMetadata = kotlinx.serialization.json.JsonNull,
@@ -119,6 +125,31 @@ class ViewerHostTest {
     private fun bringBridgeUp(controller: ViewerController, js: FakeJs) {
         js.pollResponse = """[{"type":"qt-ready"}]"""
         controller.bridge!!.onTitleChanged(ViewerBridge.SPECIAL_TITLE + "0")
+    }
+
+    /**
+     * With a real (executor) IO dispatcher, an open's pipeline lands
+     * asynchronously. Wait until the current book hash has moved off
+     * [fromHash], the [expectedLoads]-th start_book_load has been sent
+     * (sendBookLoad sets awaitingBookDisplay, so a content_file_changed
+     * after this is consumed), or the open lands in the error overlay —
+     * then let the caller assert which. [fromHash] MUST be sampled before
+     * the open starts: with a synchronous dispatcher it lands immediately.
+     */
+    private fun awaitOpenLanded(
+        controller: ViewerController,
+        js: FakeJs,
+        fromHash: String?,
+        expectedLoads: Int,
+    ) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            val s = controller.state.value
+            val loads = js.fromPythonCalls().count { "start_book_load" in it }
+            if ((s.currentBookHash != fromHash && loads >= expectedLoads) || s.errorMessage != null) return
+            Thread.sleep(20)
+        }
+        error("open did not settle within 10s (hash still $fromHash)")
     }
 
     // ---- handshake ----------------------------------------------------------
@@ -181,6 +212,269 @@ class ViewerHostTest {
         assertFalse(controller.state.value.preparing)
         assertTrue(controller.state.value.errorMessage.orEmpty().isNotEmpty())
         assertNull(controller.bookServer.currentBook)
+    }
+
+    // ---- open-window state machine --------------------------------------------
+
+    /** Open + first display of a book, returning its render-cache hash. */
+    private fun openAndDisplay(controller: ViewerController, js: FakeJs, bytes: () -> ByteArray): String {
+        val loadsBefore = js.fromPythonCalls().count { "start_book_load" in it }
+        val fromHash = controller.state.value.currentBookHash
+        controller.openBook { dest -> dest.writeBytes(bytes()) }
+        awaitOpenLanded(controller, js, fromHash, expectedLoads = loadsBefore + 1)
+        val hash = controller.state.value.currentBookHash
+        assertNotNull(hash)
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+        assertFalse(controller.state.value.preparing)
+        return hash
+    }
+
+    @Test
+    fun `failed open keeps the outgoing book keyed so its annotations survive`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        val hashA = openAndDisplay(controller, js) { minimalEpub("v1") }
+
+        controller.openBook { dest -> dest.writeBytes(ByteArray(64)) } // broken epub
+
+        assertFalse(controller.state.value.preparing)
+        assertTrue(controller.state.value.errorMessage.orEmpty().isNotEmpty())
+        // The old book stays keyed and served: its page is still displayed
+        // (the failed open never reached setBook), so signals from it must
+        // still attribute to it instead of being dropped on a null hash.
+        assertEquals(hashA, controller.state.value.currentBookHash)
+        assertNotNull(controller.bookServer.currentBook)
+
+        controller.onSignal(
+            "new_bookmark",
+            listOf(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("cfi", JsonPrimitive("epubcfi(/6/2!)"))
+                    put("title", JsonPrimitive("After fail"))
+                },
+            ),
+        )
+        assertEquals(1, controller.state.value.bookmarks.size)
+        controller.persistNow()
+        val annotA = File(root, "files/annot/${AnnotationsStore.sha256Of(hashA)}.json").readText()
+        assertTrue("After fail" in annotA, annotA)
+    }
+
+    @Test
+    fun `signals during the open window attribute to the outgoing book`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val io = Executors.newSingleThreadExecutor()
+        val controller = newController(root, js, FakeHostUi(), io = io.asCoroutineDispatcher())
+        try {
+            bringBridgeUp(controller, js)
+            val hashA = openAndDisplay(controller, js) { minimalEpub("v1") }
+
+            // Hold the second open mid-pipeline: preparing is up but the
+            // outgoing book must stay keyed (its page is still displayed).
+            val release = CountDownLatch(1)
+            controller.openBook { dest ->
+                release.await()
+                dest.writeBytes(tocEpub())
+            }
+            assertTrue(controller.state.value.preparing)
+            assertEquals(hashA, controller.state.value.currentBookHash)
+
+            controller.onSignal(
+                "new_bookmark",
+                listOf(
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("cfi", JsonPrimitive("epubcfi(/6/4!)"))
+                        put("title", JsonPrimitive("Window"))
+                    },
+                ),
+            )
+            assertEquals(1, controller.state.value.bookmarks.size)
+
+            release.countDown()
+            awaitOpenLanded(controller, js, fromHash = hashA, expectedLoads = 2)
+            val hashB = controller.state.value.currentBookHash
+            assertNotNull(hashB)
+            assertTrue(hashB != hashA)
+            controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.xhtml")))
+            assertEquals(0, controller.state.value.bookmarks.size, "book B's own list")
+
+            // The window bookmark persisted under the OUTGOING book's hash.
+            controller.persistNow()
+            val annotA = File(root, "files/annot/${AnnotationsStore.sha256Of(hashA)}.json").readText()
+            assertTrue("Window" in annotA, annotA)
+        } finally {
+            io.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `show error from the outgoing page during an open window is suppressed`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val io = Executors.newSingleThreadExecutor()
+        val controller = newController(root, js, FakeHostUi(), io = io.asCoroutineDispatcher())
+        try {
+            bringBridgeUp(controller, js)
+            openAndDisplay(controller, js) { minimalEpub("v1") }
+
+            val release = CountDownLatch(1)
+            controller.openBook { dest ->
+                release.await()
+                dest.writeBytes(tocEpub())
+            }
+            controller.onSignal("show_error", listOf(JsonPrimitive("old page broke"), JsonPrimitive("")))
+            assertTrue(controller.state.value.preparing, "the in-flight open still owns preparing")
+            assertNull(controller.state.value.errorMessage)
+            val fromHash = controller.state.value.currentBookHash
+
+            release.countDown()
+            awaitOpenLanded(controller, js, fromHash, expectedLoads = 2)
+            controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.xhtml")))
+            assertFalse(controller.state.value.preparing)
+            assertNull(controller.state.value.errorMessage)
+        } finally {
+            io.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `render process death during an open window keeps the open alive`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val io = Executors.newSingleThreadExecutor()
+        val controller = newController(root, js, FakeHostUi(), io = io.asCoroutineDispatcher())
+        try {
+            bringBridgeUp(controller, js)
+            val hashA = openAndDisplay(controller, js) { minimalEpub("v1") }
+
+            val release = CountDownLatch(1)
+            controller.openBook { dest ->
+                release.await()
+                dest.writeBytes(tocEpub())
+            }
+            controller.onRenderProcessGone()
+            assertTrue(controller.state.value.preparing, "in-flight open keeps preparing")
+
+            release.countDown()
+            awaitOpenLanded(controller, js, fromHash = hashA, expectedLoads = 2)
+            val hashB = controller.state.value.currentBookHash
+            assertNotNull(hashB)
+
+            // The rebuilt WebView gets the book that was opening.
+            val js2 = FakeJs()
+            controller.attachBridge(ViewerBridge(js2, controller::onSignal) {})
+            bringBridgeUp(controller, js2)
+            val load = js2.fromPythonCalls().single { "start_book_load" in it }
+            assertTrue(hashB in load, load)
+            controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.xhtml")))
+            assertFalse(controller.state.value.preparing)
+        } finally {
+            io.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `reload during an open window is dropped without evicting the served book`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val io = Executors.newSingleThreadExecutor()
+        val controller = newController(root, js, FakeHostUi(), io = io.asCoroutineDispatcher())
+        try {
+            bringBridgeUp(controller, js)
+            val hashA = openAndDisplay(controller, js) { minimalEpub("v1") }
+
+            val release = CountDownLatch(1)
+            controller.openBook { dest ->
+                release.await()
+                dest.writeBytes(tocEpub())
+            }
+            // reload_book mid-window: dropped (preparing), and — unlike the
+            // old pre-evict — the served book's rendered dir stays on disk.
+            controller.reloadBook()
+            assertTrue(controller.state.value.preparing)
+            assertTrue(File(root, "cache/ev2/f/$hashA").isDirectory, "served dir must not be evicted")
+
+            release.countDown()
+            awaitOpenLanded(controller, js, fromHash = hashA, expectedLoads = 2)
+            controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.xhtml")))
+            assertFalse(controller.state.value.preparing)
+            assertTrue(controller.state.value.currentBookHash != hashA, "the in-flight book, not the reload, landed")
+        } finally {
+            io.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `reload re-renders the current book through the force path`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        val hash = openAndDisplay(controller, js) { minimalEpub("v1") }
+        val dir = File(root, "cache/ev2/f/$hash")
+        // A stray file proves the reload actually replaced the directory —
+        // a cache hit would leave the marker in place.
+        File(dir, "stale-marker").writeText("old render")
+
+        js.calls.clear()
+        controller.reloadBook()
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.html")))
+
+        assertFalse(controller.state.value.preparing)
+        assertEquals(hash, controller.state.value.currentBookHash, "same book re-rendered")
+        assertFalse(File(dir, "stale-marker").exists(), "force path replaced the rendered dir")
+        assertTrue(js.fromPythonCalls().any { "start_book_load" in it })
+    }
+
+    @Test
+    fun `startup trim waits for an in-flight open and spares its book`() {
+        val root = tempRoot()
+        // Two junk cache entries to give the sweep something to remove.
+        val cache = RenderBookCache(File(root, "cache"))
+        repeat(2) { seed ->
+            val src = File.createTempFile("junk$seed", ".bin")
+            src.deleteOnExit()
+            src.writeBytes(ByteArray(seed + 1))
+            val t = cache.createTransient()
+            File(t, "calibre-book-manifest.json").writeText("{}")
+            File(t, "payload.bin").writeBytes(ByteArray(100_000))
+            cache.commit(src, t)
+        }
+
+        val js = FakeJs()
+        val io = Executors.newSingleThreadExecutor()
+        val controller = newController(root, js, FakeHostUi(), io = io.asCoroutineDispatcher())
+        try {
+            bringBridgeUp(controller, js)
+
+            val release = CountDownLatch(1)
+            controller.openBook { dest ->
+                release.await()
+                dest.writeBytes(minimalEpub("v1"))
+            }
+            // Zero budget: every unprotected entry must go; the book being
+            // opened must not, even though its hash only lands on completion.
+            controller.trimRenderCache(maxBytes = 0)
+            release.countDown()
+            awaitOpenLanded(controller, js, fromHash = null, expectedLoads = 1)
+            val hash = controller.state.value.currentBookHash
+            assertNotNull(hash)
+
+            // The sweep shares the single IO thread, so it runs after the
+            // open settles; wait for it to finish its work.
+            val finished = File(root, "cache/ev2/f")
+            val deadline = System.currentTimeMillis() + 10_000
+            while (finished.listFiles()!!.size > 1 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20)
+            }
+            val dirs = finished.listFiles()!!.map { it.name }
+            assertEquals(listOf(hash), dirs, "only the opened book survives the sweep")
+        } finally {
+            io.shutdownNow()
+        }
     }
 
     @Test

@@ -115,6 +115,13 @@ class ViewerController(
     /** Search core for the open book; rebuilt on openBook. */
     private var searcher: BookSearcher? = null
 
+    /**
+     * The open pipeline's coroutine. `preparing` in the UI state is true
+     * exactly while this is active; the error paths that clear preparing
+     * consult (or wait on) this job so the two can never disagree.
+     */
+    private var openJob: Job? = null
+
     private var searchJob: Job? = null
 
     /** The query behind searchResults — echoed into each show_search_result. */
@@ -173,33 +180,47 @@ class ViewerController(
      * start_book_load is queued/sent. [originKey] is the opaque key the book
      * was opened by (the SAF content URI) — it becomes pathtoebook so the
      * page's recents list dedupes per source book and echoes it back through
-     * ask_for_open. UI state flips to Reading once the first
-     * content_file_changed arrives — the page is the source of truth.
+     * ask_for_open. [force] re-renders even when the render cache has a
+     * finished entry for the book (reload_book after a viewer.js transform
+     * update). UI state flips to Reading once the first content_file_changed
+     * arrives — the page is the source of truth.
      */
-    fun openBook(originKey: String? = null, copy: (File) -> Unit) {
-        if (_state.value.preparing) return
+    fun openBook(originKey: String? = null, force: Boolean = false, copy: (File) -> Unit) {
+        if (_state.value.preparing) {
+            // Re-entrancy is dropped, not queued: a queued open would fire
+            // its state writes after whichever open is still in flight,
+            // interleaving two books' current/bookServer/hash transitions.
+            log("openBook dropped: another open is already in flight")
+            return
+        }
         // A still-running search for the previous book must not keep
         // streaming results into the freshly loaded page.
         searchJob?.cancel()
         lastCopy = copy
         lastOriginKey = originKey
         awaitingBookDisplay = false
+        // currentBookHash, bookmarks and highlights intentionally keep the
+        // outgoing book's values: every signal that can still arrive during
+        // the open window comes from the outgoing page and must attribute to
+        // the outgoing book (new_bookmark, highlights_changed, last-read).
+        // Nulled here, a FAILED open left the hash null until the next
+        // successful open, silently dropping every bookmark/highlight made
+        // over the old page in between. On success all three are replaced
+        // with the new book's values below.
         _state.value = _state.value.copy(
             preparing = true, errorMessage = null, loadingMessage = null, tocVisible = false,
             searchVisible = false, searchResults = emptyList(), searching = false,
             searchError = null,
             currentResultNum = null, currentName = null,
             bookmarksVisible = false, highlightsVisible = false, profilesVisible = false,
-            bookmarks = emptyList(), highlights = emptyList(),
             profiles = profileStore.list(),
             profileDraftName = "",
-            currentBookHash = null,
         )
-        scope.launch {
+        openJob = scope.launch {
             try {
                 val opened = withContext(ioDispatcher) {
                     val staged = bookOpener.stage(copy)
-                    bookOpener.open(staged, originKey = originKey)
+                    bookOpener.open(staged, force = force, originKey = originKey)
                 }
                 current = opened
                 val viewerBook = ViewerBook.open(opened.bookDir, opened.sourceFile.path)
@@ -254,6 +275,13 @@ class ViewerController(
 
     /** Native input/picker failures that happen before [openBook] starts. */
     fun showOpenError(message: String) {
+        if (openJob?.isActive == true) {
+            // A contradictory host-side error mid-open (e.g. a broken second
+            // ACTION_VIEW): clearing preparing underneath the in-flight open
+            // would reopen the double-open window.
+            log("showOpenError suppressed during open: $message")
+            return
+        }
         awaitingBookDisplay = false
         _state.value = _state.value.copy(
             preparing = false,
@@ -287,8 +315,18 @@ class ViewerController(
     /** Render-process crash: the WebView stack is being rebuilt. */
     fun onRenderProcessGone() {
         awaitingBookDisplay = false
+        // Everything queued against the dead page is orphaned: stop streaming
+        // search results into it and drop get_current_cfi requests whose
+        // replies died with the renderer.
+        searchJob?.cancel()
+        pendingCfiRequests.clear()
+        // An in-flight open is left to land: its send to the dead bridge is
+        // inert, and attachBridge re-sends `current` to the rebuilt page.
+        // Clearing preparing underneath it would reopen the double-open
+        // window, so keep preparing exactly while the open is alive.
         _state.value = _state.value.copy(
-            preparing = false, loadingMessage = null, tocVisible = false, searchVisible = false,
+            preparing = openJob?.isActive == true,
+            loadingMessage = null, tocVisible = false, searchVisible = false,
         )
     }
 
@@ -373,9 +411,13 @@ class ViewerController(
 
     override fun reloadBook() {
         val copy = lastCopy ?: return
-        val hash = current?.bookHash
-        if (hash != null) renderCache.evict(hash)
-        openBook(lastOriginKey, copy)
+        // No pre-evict: evicting the current book's rendered dir here yanked
+        // the files out from under the page still being served (404s for the
+        // whole re-render duration). force re-renders into a transient dir
+        // and cache.commit swaps it in; the old dir stays served until then.
+        // The preparing guard inside openBook drops the reload when another
+        // open is in flight.
+        openBook(originKey = lastOriginKey, force = true, copy = copy)
     }
 
     /**
@@ -386,6 +428,10 @@ class ViewerController(
      */
     fun trimRenderCache(maxBytes: Long = RENDER_CACHE_MAX_BYTES) {
         scope.launch(ioDispatcher) {
+            // Let an in-flight open settle first: once it lands, its book IS
+            // the protected current book below. Trimming mid-open could race
+            // cache.commit for the same directory.
+            openJob?.join()
             renderCache.evictOlderThan(RENDER_CACHE_AGE_MS)
             renderCache.evictToSize(maxBytes, _state.value.currentBookHash)
         }
@@ -560,6 +606,14 @@ class ViewerController(
     }
 
     override fun showError(title: String, details: String) {
+        if (openJob?.isActive == true) {
+            // The error came from the outgoing page while a new open is in
+            // flight (it is being replaced anyway); surfacing it would clear
+            // preparing underneath the open and reopen the double-open
+            // window. The open's own outcome decides the final state.
+            log("showError suppressed during open: $title")
+            return
+        }
         awaitingBookDisplay = false
         _state.value = _state.value.copy(
             preparing = false,

@@ -35,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.xmlpull.v1.XmlPullParserFactory
 
 class ViewerHostTest {
@@ -508,6 +509,41 @@ class ViewerHostTest {
         controller.openBook { dest -> dest.writeBytes(minimalEpub()) }
         val load = js.fromPythonCalls().single { "start_book_load" in it }
         assertTrue("""{"type":"cfi","data":"epubcfi(/6/4!)"}""" in load, load)
+    }
+
+    @Test
+    fun `last read position attributes to the book that reported it`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        val hashA = openAndDisplay(controller, js) { minimalEpub("v1") }
+
+        // Book A reports a position; before the 2s debounce fires, book B
+        // opens and reports its own. A's position must land under A's hash
+        // (flushed when B's first signal arrives), B's under B's.
+        controller.onSignal(
+            "update_last_read_position",
+            listOf(JsonPrimitive("epubcfi(/6/2)"), JsonPrimitive(0.1)),
+        )
+        controller.openBook { dest -> dest.writeBytes(tocEpub()) }
+        controller.onSignal("content_file_changed", listOf(JsonPrimitive("ch1.xhtml")))
+        val hashB = controller.state.value.currentBookHash
+        assertNotNull(hashB)
+        assertTrue(hashB != hashA)
+        controller.onSignal(
+            "update_last_read_position",
+            listOf(JsonPrimitive("epubcfi(/6/12)"), JsonPrimitive(0.9)),
+        )
+        controller.persistNow()
+
+        val entries = kotlinx.serialization.json.Json.parseToJsonElement(
+            File(root, "files/last-read.json").readText(),
+        ).jsonObject
+        val a = entries[hashA]!!.jsonObject
+        val b = entries[hashB]!!.jsonObject
+        assertEquals("epubcfi(/6/2)", (a["cfi"] as JsonPrimitive).content)
+        assertEquals("epubcfi(/6/12)", (b["cfi"] as JsonPrimitive).content)
     }
 
     @Test

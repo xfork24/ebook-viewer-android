@@ -138,7 +138,16 @@ class ViewerController(
     private var lastOriginKey: String? = null
 
     private var lastReadJob: Job? = null
-    private var pendingPosition: Pair<String, Double>? = null
+
+    /** Debounced last-read position, keyed by the book that reported it. */
+    private var pendingPosition: PendingPosition? = null
+
+    private data class PendingPosition(
+        val bookHash: String,
+        val cfi: String,
+        val posFrac: Double,
+        val originKey: String,
+    )
 
     private val uiData: JsonObject = uiData
 
@@ -375,18 +384,27 @@ class ViewerController(
 
     override fun updateLastReadPosition(cfi: String, posFrac: Double) {
         if (cfi.isEmpty()) return
-        pendingPosition = cfi to posFrac
+        // Attribute at SIGNAL arrival. Reading `current` at debounce-fire
+        // time wrote the outgoing book's cfi under the newly opened book's
+        // hash whenever a book switch landed inside the debounce window —
+        // corrupting the new book's restore point.
+        val book = current ?: return
+        val pending = pendingPosition
+        if (pending != null && pending.bookHash != book.bookHash) {
+            // The pending position belongs to the outgoing book and is about
+            // to be overwritten; write it out now so its final reading spot
+            // is not lost.
+            pendingPosition = null
+            lastReadStore.update(pending.bookHash, pending.cfi, pending.posFrac, pending.originKey)
+        }
+        pendingPosition = PendingPosition(book.bookHash, cfi, posFrac, book.originKey)
         lastReadJob?.cancel()
         lastReadJob = scope.launch {
             delay(LAST_READ_DEBOUNCE_MS)
-            // Read-and-clear on the main thread, write off it — the store is
-            // @Synchronized so an openBook reading a position concurrently is
-            // safe.
-            val book = current ?: return@launch
             val pos = pendingPosition ?: return@launch
             pendingPosition = null
             withContext(ioDispatcher) {
-                lastReadStore.update(book.bookHash, pos.first, pos.second, book.originKey)
+                lastReadStore.update(pos.bookHash, pos.cfi, pos.posFrac, pos.originKey)
             }
         }
     }
@@ -924,10 +942,9 @@ class ViewerController(
     }
 
     private fun flushPosition() {
-        val book = current ?: return
         val pos = pendingPosition ?: return
         pendingPosition = null
-        lastReadStore.update(book.bookHash, pos.first, pos.second, book.originKey)
+        lastReadStore.update(pos.bookHash, pos.cfi, pos.posFrac, pos.originKey)
     }
 
     private fun sendBookLoad(

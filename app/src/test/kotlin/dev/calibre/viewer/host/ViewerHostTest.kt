@@ -1234,12 +1234,23 @@ class ViewerHostTest {
 
     // ---- fixture ---------------------------------------------------------------
 
+    /**
+     * Fixed zip entry timestamp: DOS zip times have 2-second granularity, so
+     * two fixture builds straddling a boundary produce different bytes →
+     * different content-derived book hashes → the "reopen the same EPUB"
+     * persistence assertions flake. Pinning makes fixture bytes (and hashes)
+     * deterministic per variant.
+     */
+    private val zipEntryEpochMs = 1_600_000_000_000L
+
     /** Minimal valid EPUB with a single chapter; [variant] changes the bytes. */
     private fun minimalEpub(variant: String = "v1"): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             fun put(name: String, content: String) {
-                zip.putNextEntry(ZipEntry(name))
+                val entry = ZipEntry(name)
+                entry.time = zipEntryEpochMs
+                zip.putNextEntry(entry)
                 zip.write(content.toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
@@ -1285,7 +1296,9 @@ class ViewerHostTest {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             fun put(name: String, content: String) {
-                zip.putNextEntry(ZipEntry(name))
+                val entry = ZipEntry(name)
+                entry.time = zipEntryEpochMs
+                zip.putNextEntry(entry)
                 zip.write(content.toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }

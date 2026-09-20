@@ -35383,12 +35383,12 @@ return this.__repr__();
                 // value is the reader's visibility state machine.
                 ".android-aligned-secondary-list .item-first-row{align-items:center !important;}",
                 ".android-aligned-secondary-list .item-subtitle{padding-top:0 !important;}",
-                // The list itself, vertically centered in its (now flex-column)
-                // parent — margin-top/bottom auto squeezes it into the middle of
-                // the available height, and flex-grow:0 overrides Go-to's inline
-                // flex_grow:10 so the list shrinks to its content height instead
-                // of stretching and absorbing the centering margin.
-                ".android-aligned-secondary-list{flex-grow:0 !important;margin-top:auto !important;margin-bottom:auto !important;}",
+                // The list itself, top-aligned in its (now flex-column) parent.
+                // flex-grow:0 overrides Go-to's inline flex_grow:10 so the list
+                // shrinks to its content height instead of stretching and pushing
+                // itself off-screen. No margin-top/bottom auto: the user wants the
+                // entries anchored to the top of the panel, not vertically centered.
+                ".android-aligned-secondary-list{flex-grow:0 !important;}",
                 // Generic fallback for any leftover viewer.js element.
                 "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",
                 // Universal bump: every non-input, non-script element inside

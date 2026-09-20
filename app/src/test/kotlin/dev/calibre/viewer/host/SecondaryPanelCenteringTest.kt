@@ -52,17 +52,23 @@ class SecondaryPanelCenteringTest {
     }
 
     @Test
-    fun `android-aligned-secondary-list is vertically centered by margin auto and shrinks to content`() {
-        // The single CSS rule that makes centering actually take effect:
+    fun `android-aligned-secondary-list is top-aligned and shrinks to content`() {
+        // The single CSS rule for the secondary lists:
         // - flex-grow:0 !important overrides Go-to's inline flex_grow:10 so
-        //   the list doesn't stretch and absorb the auto margins.
-        // - margin-top/bottom auto squeezes it into the vertical middle of
-        //   the available space (and gracefully degrades to 0 on overflow).
+        //   the list doesn't stretch off-screen.
+        // - no margin-top/bottom auto: the user wants entries anchored at the
+        //   top of the panel, not vertically centered.
         val expected =
-            "\".android-aligned-secondary-list{flex-grow:0 !important;margin-top:auto !important;margin-bottom:auto !important;}\""
+            "\".android-aligned-secondary-list{flex-grow:0 !important;}\""
         assertTrue(
             viewerJs.contains(expected),
-            "viewer.js must contain the margin-auto centering rule for the secondary lists",
+            "viewer.js must contain the top-aligned flex-grow:0 rule for the secondary lists",
+        )
+        // Guard against regressing back to the vertical-centered variant.
+        assertTrue(
+            "margin-top:auto !important" !in viewerJs &&
+                "margin-bottom:auto !important" !in viewerJs,
+            "viewer.js must not auto-center the secondary lists with margin-top/bottom auto",
         )
     }
 

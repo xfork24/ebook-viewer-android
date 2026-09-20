@@ -57,6 +57,12 @@ interface SignalEffects {
      */
     fun askForOpen(path: String?) {}
 
+    /**
+     * change_background_image — Styles "Change image" button; [imgId] is the
+     * DOM id of the preferences preview <img> the reply must target.
+     */
+    fun changeBackgroundImage(imgId: String) {}
+
     fun copySelection(text: String) {}
 
     fun openUrl(url: String) {}

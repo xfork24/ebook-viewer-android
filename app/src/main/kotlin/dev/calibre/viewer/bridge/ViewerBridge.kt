@@ -221,6 +221,17 @@ class ViewerBridge(
     }
 
     /**
+     * viewer.js:49916 background_image_changed(img_id, url) — refreshes the
+     * Styles preview <img> (cache-busted src + dataset.url); the page
+     * persists dataset.url as the background_image session value on commit,
+     * so the URL must be the absolute /reader-background form that
+     * modify_background_image_url_for_fetch passes through unchanged.
+     */
+    fun backgroundImageChanged(imgId: String, url: String) {
+        executeWhenReady("background_image_changed", JsonPrimitive(imgId), JsonPrimitive(url))
+    }
+
+    /**
      * viewer.js:49256 profile_response(which, x). Reply to profile_op
      * round-trips: "all-profiles" → list, "save-profile" → ack, "apply-profile"
      * → forward the dict so the page can apply settings locally, "request-save"

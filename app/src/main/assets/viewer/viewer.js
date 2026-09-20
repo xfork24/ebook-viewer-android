@@ -35344,6 +35344,13 @@ return this.__repr__();
                 // 1em so font-size inherits exactly once.
                 "#book-overlay,.modal-container{font-size:1.5em !important;}",
                 ".read-book-main-overlay-action-icon{width:1.5em !important;height:1.5em !important;}",
+                // The Aa text-icon carries BOTH the text-icon and
+                // action-icon classes; exempt it from the fixed
+                // 1.5em SVG box above — with the text-icon's own
+                // 175% font-size that box grows to 2.625 parent-em
+                // and the line-height:1 glyph anchors at its top,
+                // floating "Aa" above the label's middle.
+                ".read-book-main-overlay-text-icon{width:auto !important;height:auto !important;}",
                 // Each toolbar button (icon + label) — center them vertically
                 // so the 175%-sized icon and the regular label align at
                 // their middles, not their baselines (which made the row

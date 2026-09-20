@@ -30,6 +30,35 @@ class BackgroundImages(private val configDir: File) {
         return image
     }
 
+    /**
+     * Write the raw configured background (bg-image.data = "mime|data") via
+     * tmp+rename so a crash mid-write can never leave a truncated file. The
+     * cached-empty sentinel must be evicted with it: a get("") before the
+     * first store caches load()'s empty Image (missing file returns the
+     * sentinel, not null), and without this eviction every later fetch of
+     * the raw background would keep 404ing until LRU pressure.
+     */
+    @Synchronized
+    fun store(mime: String, bytes: ByteArray) {
+        configDir.mkdirs()
+        val mimeBytes = mime.toByteArray(Charsets.UTF_8)
+        val payload = ByteArray(mimeBytes.size + 1 + bytes.size)
+        mimeBytes.copyInto(payload)
+        payload[mimeBytes.size] = '|'.code.toByte()
+        bytes.copyInto(payload, mimeBytes.size + 1)
+        val target = File(configDir, "bg-image.data")
+        val tmp = File(configDir, "bg-image.data.tmp")
+        try {
+            tmp.writeBytes(payload)
+            if (target.isFile) target.delete()
+            if (!tmp.renameTo(target)) target.writeBytes(payload)
+        } catch (e: IOException) {
+            tmp.delete()
+            return
+        }
+        cache.remove("")
+    }
+
     private fun load(encodedFname: String): Image? {
         if (encodedFname.isEmpty()) {
             // bg-image.data: "mime|data" in one file.

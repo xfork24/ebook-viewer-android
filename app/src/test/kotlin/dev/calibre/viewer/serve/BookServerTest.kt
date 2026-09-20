@@ -274,6 +274,29 @@ class BookServerTest {
     }
 
     @Test
+    fun `store overwrites the raw background and invalidates the cached empty sentinel`() {
+        val configDir = createTempDir(prefix = "serve-bg-store")
+        Runtime.getRuntime().addShutdownHook(Thread { configDir.deleteRecursively() })
+        val images = BackgroundImages(configDir)
+        val server = BookServer(FakeAssets(emptyMap()), images)
+
+        // A fetch before any image exists caches the empty sentinel (load("")
+        // returns it instead of null) — the exact sequence a fresh install
+        // runs through when the page first asks for its configured background.
+        assertTrue(server.get("/reader-background") is ServeResult.Fail)
+
+        images.store("image/png", byteArrayOf(1, 2, 3))
+
+        val r = server.get("/reader-background")
+        assertTrue(r is ServeResult.Ok, "after store: $r")
+        assertEquals("image/png", (r as ServeResult.Ok).mime)
+        assertTrue(r.data.contentEquals(byteArrayOf(1, 2, 3)))
+        assertTrue(
+            File(configDir, "bg-image.data").readBytes().toString(Charsets.UTF_8).startsWith("image/png|"),
+        )
+    }
+
+    @Test
     fun `reader-background serves named images from the config dir`() {
         val configDir = createTempDir(prefix = "serve-bg")
         Runtime.getRuntime().addShutdownHook(Thread { configDir.deleteRecursively() })

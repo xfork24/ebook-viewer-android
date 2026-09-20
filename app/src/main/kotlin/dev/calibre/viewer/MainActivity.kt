@@ -12,6 +12,8 @@ import android.content.ClipboardManager
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -23,6 +25,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,16 +41,23 @@ import dev.calibre.viewer.eink.EinkKeys
 import dev.calibre.viewer.host.FontSettings
 import dev.calibre.viewer.host.HostUi
 import dev.calibre.viewer.host.StandardFontFamily
+import dev.calibre.viewer.host.SystemFontFamilies
 import dev.calibre.viewer.host.UiData
 import dev.calibre.viewer.host.ViewerController
 import dev.calibre.viewer.ui.NoIndication
 import dev.calibre.viewer.ui.ViewerScreen
 import dev.calibre.viewer.web.AndroidAssetSource
 import dev.calibre.viewer.web.ViewerWebHost
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
@@ -74,6 +84,16 @@ class MainActivity : ComponentActivity(), HostUi {
                 )
                 is BookPickerResult.Selected -> openRequest(result.request)
             }
+        }
+
+    /**
+     * Styles "Change image": OpenDocument (ACTION_OPEN_DOCUMENT) always
+     * routes to DocumentsUI — the system file manager — unlike GetContent,
+     * which may resolve to the photo picker.
+     */
+    private val pickBackgroundImage =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) handleBackgroundImagePicked(uri)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -110,7 +130,7 @@ class MainActivity : ComponentActivity(), HostUi {
             scope = lifecycleScope,
             assets = assets,
             fieldMetadata = loadFieldMetadata(assets),
-            uiData = UiData.build(isDark),
+            uiData = UiData.build(isDark, SystemFontFamilies.deviceFamilies(UiData.DEFAULT_FONT_FAMILIES)),
             domParserFactory = {
                 dev.calibre.viewer.parser.dom.DomParser { android.util.Xml.newPullParser() }
             },
@@ -503,6 +523,81 @@ class MainActivity : ComponentActivity(), HostUi {
         pickBook.launch(Unit)
     }
 
+    override fun pickBackgroundImage() {
+        pickBackgroundImage.launch(arrayOf("image/*"))
+    }
+
+    /**
+     * Read the picked image off the main thread, then hand it to the
+     * controller. The read carries a hard timeout: vendor DocumentsProviders
+     * (e-ink firmwares) have been observed to hang on openInputStream, and a
+     * wedged Binder call must surface the normal error overlay, not sit
+     * silent while the user wonders why nothing happened.
+     */
+    private fun handleBackgroundImagePicked(uri: Uri) {
+        lifecycleScope.launch {
+            Log.i(TAG, "background image picked: $uri")
+            val picked = try {
+                withTimeout(BACKGROUND_IMAGE_READ_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) { readBackgroundImage(uri) }
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.w(TAG, "image provider did not answer within " +
+                    "${BACKGROUND_IMAGE_READ_TIMEOUT_MS}ms; abandoning read", e)
+                null
+            }
+            if (picked == null) {
+                controller.showOpenError(
+                    "Could not read the selected image. Try a different file or file manager.",
+                )
+                return@launch
+            }
+            Log.i(TAG, "background image read ok: mime=${picked.first} bytes=${picked.second.size}")
+            controller.onBackgroundImagePicked(picked.first, picked.second)
+        }
+    }
+
+    /**
+     * (mime, bytes) or null when unreadable. Oversized picks are downscaled
+     * to JPEG: BookServer buffers whole images per request and caches four,
+     * so a camera-sized original would hammer low-memory e-ink devices on
+     * every color-scheme change.
+     */
+    private fun readBackgroundImage(uri: Uri): Pair<String, ByteArray>? {
+        try {
+            val raw = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+            val mime = contentResolver.getType(uri)?.takeIf { it.startsWith("image/") } ?: "image/jpeg"
+            if (raw.size > BACKGROUND_IMAGE_DOWNSCALE_THRESHOLD) {
+                downscale(raw)?.let { return "image/jpeg" to it }
+            }
+            return mime to raw
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Vendor providers can throw almost anything across the Binder
+            // (SecurityException, IllegalStateException, ...); every failure
+            // mode funnels into the same friendly error.
+            Log.w(TAG, "failed to read picked image: $uri", e)
+            return null
+        }
+    }
+
+    private fun downscale(raw: ByteArray): ByteArray? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= BACKGROUND_IMAGE_MAX_EDGE) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size, opts) ?: return null
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
+        bmp.recycle()
+        return out.toByteArray()
+    }
+
     override fun finishApp() {
         finish()
     }
@@ -572,5 +667,14 @@ class MainActivity : ComponentActivity(), HostUi {
         const val DEFAULT_SERIF_FAMILY = "serif"
         const val DEFAULT_SANS_FAMILY = "sans-serif"
         const val DEFAULT_MONO_FAMILY = "monospace"
+
+        // Picked background images above this size get decoded and
+        // re-encoded as a bounded JPEG (long edge BACKGROUND_IMAGE_MAX_EDGE).
+        const val BACKGROUND_IMAGE_DOWNSCALE_THRESHOLD = 1024 * 1024
+        const val BACKGROUND_IMAGE_MAX_EDGE = 2048
+
+        // Hard cap on the picker read: a hung vendor DocumentsProvider must
+        // degrade to the error overlay, not an eternal silent no-op.
+        const val BACKGROUND_IMAGE_READ_TIMEOUT_MS = 10_000L
     }
 }

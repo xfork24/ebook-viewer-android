@@ -68,6 +68,10 @@ class ViewerHostTest {
             events.add("pickBook")
         }
 
+        override fun pickBackgroundImage() {
+            events.add("pickBackgroundImage")
+        }
+
         override fun finishApp() {
             events.add("finish")
         }
@@ -924,6 +928,57 @@ class ViewerHostTest {
         controller.onSignal("print_book", emptyList())
         controller.onSignal("tts", listOf(JsonPrimitive("play"), JsonPrimitive("x")))
         assertFalse(controller.state.value.bookOpen)
+    }
+
+    @Test
+    fun `change background image signal opens picker and round-trips to page`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val hostUi = FakeHostUi()
+        val controller = newController(root, js, hostUi)
+        bringBridgeUp(controller, js)
+
+        // Styles "Change image": the page passes the preview <img> DOM id.
+        controller.onSignal("change_background_image", listOf(JsonPrimitive("bg-image-7")))
+        assertEquals("pickBackgroundImage", hostUi.events.last())
+
+        // The picked image is stored and acknowledged with the absolute URL
+        // the page both previews (img.src) and persists (dataset.url).
+        val bytes = byteArrayOf(1, 2, 3)
+        controller.onBackgroundImagePicked("image/png", bytes)
+
+        val changed = js.fromPythonCalls().single { "background_image_changed" in it }
+        assertTrue("\"bg-image-7\"" in changed, changed)
+        assertTrue("\"https://${BookServer.FAKE_HOST}/reader-background\"" in changed, changed)
+
+        val served = controller.bookServer.handle(
+            "GET", "https", BookServer.FAKE_HOST, "/reader-background",
+        )
+        assertTrue(served is ServeResult.Ok, "background route after store: $served")
+        assertEquals("image/png", (served as ServeResult.Ok).mime)
+        assertTrue(served.data.contentEquals(bytes))
+        assertTrue(
+            File(root, "files/background-images/bg-image.data")
+                .readBytes().toString(Charsets.UTF_8).startsWith("image/png|"),
+        )
+    }
+
+    @Test
+    fun `background image pick without pending request is ignored`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val hostUi = FakeHostUi()
+        val controller = newController(root, js, hostUi)
+        bringBridgeUp(controller, js)
+
+        // A late/cancelled pick with no armed request must not touch the page.
+        controller.onBackgroundImagePicked("image/png", byteArrayOf(1, 2, 3))
+        assertTrue(js.fromPythonCalls().none { "background_image_changed" in it })
+        assertFalse(File(root, "files/background-images/bg-image.data").exists())
+
+        // A malformed page signal with no img id never arms the picker.
+        controller.onSignal("change_background_image", listOf(JsonPrimitive("")))
+        assertTrue("pickBackgroundImage" !in hostUi.events)
     }
 
     @Test

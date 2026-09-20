@@ -22,17 +22,17 @@ object UiData {
     const val QT_VERSION_SENTINEL = "6.6.0"
 
     /**
-     * M1 font list — the generic CSS families every Android WebView resolves,
-     * plus the serif/sans defaults the font panel offers. M2 will enumerate
-     * the device's real families.
+     * The generic CSS families every Android WebView resolves, plus the
+     * serif/sans defaults the font panel offers — used as the fallback when
+     * the device's fonts.xml cannot be read (see SystemFontFamilies).
      */
-    private val FONT_FAMILIES = listOf(
+    internal val DEFAULT_FONT_FAMILIES = listOf(
         "serif", "sans-serif", "monospace", "serif-monospace", "sans-serif-condensed",
         "cursive", "Noto Serif", "Noto Sans",
     )
 
-    fun build(isDark: Boolean): JsonObject = buildJsonObject {
-        put("all_font_families", JsonArray(FONT_FAMILIES.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+    fun build(isDark: Boolean, fontFamilies: List<String> = DEFAULT_FONT_FAMILIES): JsonObject = buildJsonObject {
+        put("all_font_families", JsonArray(fontFamilies.map { kotlinx.serialization.json.JsonPrimitive(it) }))
         put("ui_font_family", "sans-serif")
         put("ui_font_sz", "10pt")
         put("show_home_page_on_ready", true)

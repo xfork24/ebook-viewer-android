@@ -11,6 +11,9 @@ interface HostUi {
     /** ask_for_open — launch the system file picker (SAF). */
     fun pickBook()
 
+    /** change_background_image — launch the system file manager for an image. */
+    fun pickBackgroundImage()
+
     /**
      * ask_for_open(path) from the recently-opened list — resolve the entry's
      * original key (persisted content URI, or a plain path for legacy

@@ -51,6 +51,9 @@ class ViewerSignalRouter(private val effects: SignalEffects) {
             // (or null for the plain "Open book" button). Blank counts as
             // absent — the page sometimes sends "" for a missing entry.
             "ask_for_open" -> effects.askForOpen(args.stringAt(0)?.takeIf { it.isNotBlank() })
+            // change_background_image: viewer.js:50455 — the Styles "Change
+            // image" button; args[0] is the preview <img> DOM id.
+            "change_background_image" -> effects.changeBackgroundImage(args.stringAt(0).orEmpty())
             "copy_selection" -> effects.copySelection(args.stringAt(0).orEmpty())
             "open_url" -> effects.openUrl(args.stringAt(0).orEmpty())
             "show_error" -> effects.showError(

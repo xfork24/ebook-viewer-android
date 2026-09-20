@@ -67,7 +67,9 @@ class ViewerController(
     private val log: (String) -> Unit = {},
 ) : SignalEffects {
 
-    val bookServer: BookServer = BookServer(assets, BackgroundImages(File(filesDir, "background-images")))
+    private val backgroundImages = BackgroundImages(File(filesDir, "background-images"))
+
+    val bookServer: BookServer = BookServer(assets, backgroundImages)
 
     private val sessionStore = SessionStore(File(filesDir, "session"))
     private val lastReadStore = LastReadStore(File(filesDir, "last-read.json"))
@@ -147,6 +149,9 @@ class ViewerController(
     private var lastOriginKey: String? = null
 
     private var lastReadJob: Job? = null
+
+    /** Styles "Change image": the preview <img> id awaiting the picker result. */
+    private var pendingBackgroundImgId: String? = null
 
     /** Debounced last-read position, keyed by the book that reported it. */
     private var pendingPosition: PendingPosition? = null
@@ -658,6 +663,45 @@ class ViewerController(
         if (hostUi.tryOpenRecent(path)) return
         bridge?.genericAction("remove-recently-opened", buildJsonObject { put("path", path) })
         hostUi.pickBook()
+    }
+
+    /**
+     * change_background_image — remember the preview <img> id and hand off
+     * to the system image picker. A cancelled picker simply never replies;
+     * the preview stays as it was.
+     */
+    override fun changeBackgroundImage(imgId: String) {
+        if (imgId.isEmpty()) return
+        pendingBackgroundImgId = imgId
+        hostUi.pickBackgroundImage()
+    }
+
+    /**
+     * Picker result: store the image as the raw configured background, then
+     * complete the round trip via background_image_changed. The absolute
+     * /reader-background URL passes through the page's
+     * modify_background_image_url_for_fetch unchanged, so one value serves
+     * the preview, the committed session data and panel re-opens.
+     */
+    fun onBackgroundImagePicked(mime: String, bytes: ByteArray) {
+        val imgId = pendingBackgroundImgId ?: return
+        pendingBackgroundImgId = null
+        if (bytes.isEmpty()) return
+        scope.launch {
+            val stored = runCatching {
+                withContext(ioDispatcher) { backgroundImages.store(mime, bytes) }
+            }.onFailure { log("background image store failed: ${it.message}") }
+            if (stored.isFailure) {
+                // Storage failure must not ripple into the coroutine handler
+                // (a crash) nor tell the page the image changed.
+                showOpenError("Could not save the selected image.")
+                return@launch
+            }
+            bridge?.backgroundImageChanged(
+                imgId,
+                "${BookServer.FAKE_PROTOCOL}://${BookServer.FAKE_HOST}/reader-background",
+            )
+        }
     }
 
     override fun copySelection(text: String) {

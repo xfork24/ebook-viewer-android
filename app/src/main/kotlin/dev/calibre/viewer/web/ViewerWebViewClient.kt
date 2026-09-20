@@ -41,7 +41,17 @@ class ViewerWebViewClient(
                 // (iReader Smart Air Pro, Android 11) render a parameterised
                 // type as text/plain — see ResponseMime.
                 val mime = splitResponseMime(result.mime)
-                WebResourceResponse(mime.type, mime.encoding, ByteArrayInputStream(result.data))
+                // The applied background is fetched by its clean URL (the
+                // preview <img> carries the page-level ?timestamp buster,
+                // this fetch does not) — without an explicit no-store a
+                // vendor WebView may heuristically cache the previous image
+                // after Change image.
+                val headers = if (path == "/reader-background" || path.startsWith("/reader-background-")) {
+                    mapOf("Cache-Control" to "no-store")
+                } else {
+                    emptyMap()
+                }
+                WebResourceResponse(mime.type, mime.encoding, 200, "OK", headers, ByteArrayInputStream(result.data))
             }
             is ServeResult.OkStream -> {
                 // Chromium reads and closes this stream itself; never close

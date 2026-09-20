@@ -15,7 +15,6 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":viewer-core"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jsoup)

@@ -66,30 +66,4 @@ object SignalNames {
         "reset_reading_rates",
         "profile_op",
     )
-
-    /** to_js actions (host → JS) callable via execute_when_ready. */
-    val HOST_TO_JS: Set<String> = setOf(
-        "create_view",
-        "start_book_load",
-        "redraw_tts_bar",
-        "goto_toc_node",
-        "goto_cfi",
-        "full_screen_state_changed",
-        "get_current_cfi",
-        "show_home_page",
-        "background_image_changed",
-        "goto_frac",
-        "trigger_shortcut",
-        "set_system_palette",
-        "highlight_action",
-        "generic_action",
-        "show_search_result",
-        "native_gesture",
-        "prepare_for_close",
-        "repair_after_fullscreen_switch",
-        "viewer_font_size_changed",
-        "tts_event",
-        "profile_response",
-        "go_to_anchor",
-    )
 }

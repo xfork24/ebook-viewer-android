@@ -44,5 +44,4 @@ python3 tools/build_viewer_js.py --calibre-src /path/to/calibre
 
 ## Status
 
-Milestone 1 (walking skeleton) in progress. See
-`docs/plan.md` or the project history for the roadmap.
+Milestone 1 (walking skeleton) in progress. See the project history for the roadmap.

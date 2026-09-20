@@ -45,3 +45,25 @@ python3 tools/build_viewer_js.py --calibre-src /path/to/calibre
 ## Status
 
 Milestone 1 (walking skeleton) in progress. See the project history for the roadmap.
+
+## Documentation
+
+- [`docs/code-review-report-2026-09-20.md`](docs/code-review-report-2026-09-20.md) — full
+  audit, 17-issue F-list, 9-fix commit timeline, e2e matrix results.
+- [`docs/roadmap-2026-09-20.md`](docs/roadmap-2026-09-20.md) — improvement
+  opportunities ranked by severity / cost-effectiveness / effort, with
+  milestone suggestions.
+
+## Testing
+
+```bash
+# JVM unit tests (Kotlin + JUnit 5, all modules)
+JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
+
+# End-to-end against a connected emulator (23-test matrix, 4 groups)
+python3 tools/e2e.py
+python3 tools/e2e.py --group A          # just startup
+python3 tools/e2e.py --device emulator-5554 --book mathml.epub
+```
+
+Evidence (screenshots, JSON dumps, summary) lands in `build/e2e-evidence/`.

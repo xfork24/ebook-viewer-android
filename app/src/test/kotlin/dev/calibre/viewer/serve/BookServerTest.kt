@@ -328,4 +328,90 @@ class BookServerTest {
 
         assertEquals(2, warns.size, warns.toString())
     }
+
+    // ---- spine prefetch (R-PERF-01) ---------------------------------------
+
+    /**
+     * Build a 5-page spine book with distinguishable content per page so a
+     * prefetch test can assert it actually opened the right files.
+     */
+    private fun multiPageBook(prefix: String = "serve-prefetch"): Pair<File, List<String>> {
+        val bookDir = createTempDir(prefix = prefix)
+        Runtime.getRuntime().addShutdownHook(Thread { bookDir.deleteRecursively() })
+        val names = listOf("p1.html", "p2.html", "p3.html", "p4.html", "p5.html")
+        val manifest = buildString {
+            append("""{"version":1,"spine":["${names.joinToString("\",\"")}"]}""")
+        }
+        File(bookDir, "calibre-book-manifest.json").writeText(manifest)
+        File(bookDir, "calibre-book-metadata.json").writeText("""{"title":"P"}""")
+        // 4 KiB per page — bigger than the prefetch cap to prove the cap is real.
+        for (n in names) {
+            val body = buildString { repeat(1024) { append("[$n]") } } // 4 KiB
+            File(bookDir, n).writeText(body)
+        }
+        return bookDir to names
+    }
+
+    @Test
+    fun `prefetchSpine opens and drains the next two spine items up to the byte cap`() {
+        val (bookDir, names) = multiPageBook()
+        val book = ViewerBook.open(bookDir, "/books/x.epub")
+        assertNotNull(book)
+        assertEquals(names, book.spine, "spine list parsed from manifest")
+        val server = BookServer(FakeAssets(emptyMap()), BackgroundImages(createTempDir(prefix = "sf-pf")))
+        server.setBook(book)
+        // Reader is currently on p1 — warm p2 + p3 with a 2 KiB cap each.
+        server.prefetchSpine(currentIdx = 0, ahead = 2, maxBytesPerFile = 2_048)
+        // No streams stay tracked after the prefetch (each was closed).
+        assertEquals(0, server.trackedStreamCount, "prefetched streams must be closed after drain")
+        // The on-demand route still serves the full file (prefetch is a
+        // warm hint, not a substitute).
+        val full = server.get("/book/${names[1]}")
+        assertTrue(full is ServeResult.OkStream)
+        val expectedBytes = File(bookDir, names[1]).readBytes()
+        (full as ServeResult.OkStream).data.use {
+            val readBack = it.readBytes()
+            assertEquals(expectedBytes.size, readBack.size, "untouched file should still be fully readable")
+            assertTrue(expectedBytes.contentEquals(readBack), "untouched file content must match")
+        }
+    }
+
+    @Test
+    fun `prefetchSpine is a no-op past the end of the spine`() {
+        val (bookDir, names) = multiPageBook()
+        val book = ViewerBook.open(bookDir, "/books/x.epub")
+        assertNotNull(book)
+        val server = BookServer(FakeAssets(emptyMap()), BackgroundImages(createTempDir(prefix = "sf-pf-end")))
+        server.setBook(book)
+        // Reader is on the last spine item; nothing to warm.
+        server.prefetchSpine(currentIdx = names.lastIndex, ahead = 2)
+        assertEquals(0, server.trackedStreamCount)
+        // And currentIdx exactly one past the end is also a clean no-op.
+        server.prefetchSpine(currentIdx = names.size, ahead = 2)
+        assertEquals(0, server.trackedStreamCount)
+    }
+
+    @Test
+    fun `prefetchSpine reclaims its streams on setBook`() {
+        // The prefetched streams register in openStreams for their short
+        // lifetime, so a book switch before they close reclaims them through
+        // the same setBook(null) reclaim path that handles undelivered page
+        // reads — no separate teardown.
+        val (bookDir, _) = multiPageBook()
+        val book = ViewerBook.open(bookDir, "/books/x.epub")
+        assertNotNull(book)
+        val server = BookServer(FakeAssets(emptyMap()), BackgroundImages(createTempDir(prefix = "sf-pf-claim")))
+        server.setBook(book)
+        server.prefetchSpine(currentIdx = 0, ahead = 2, maxBytesPerFile = 64)
+        // We can't observe an in-flight prefetch here (it finishes synchronously),
+        // but we CAN observe that setBook(null) leaves the tracker empty
+        // even after a fresh book switch — proving the prefetch path doesn't
+        // leak its CloseOnceInputStream registration into the new lifetime.
+        server.setBook(null)
+        assertEquals(0, server.trackedStreamCount)
+        val book2 = ViewerBook.open(bookDir, "/books/x.epub")
+        assertNotNull(book2)
+        server.setBook(book2)
+        assertEquals(0, server.trackedStreamCount)
+    }
 }

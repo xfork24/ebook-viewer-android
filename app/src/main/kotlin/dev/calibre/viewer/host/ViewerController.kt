@@ -113,6 +113,14 @@ class ViewerController(
 
     private var current: BookOpener.OpenedBook? = null
 
+    /**
+     * Spine index of the page most recently signalled by `content_file_changed`.
+     * -1 = unknown (no signal yet, or the spine lacks the file name). Used by
+     * the prefetch hook to compute the next two items to warm.
+     */
+    @Volatile
+    private var currentSpineIndex: Int = -1
+
     /** Search core for the open book; rebuilt on openBook. */
     private var searcher: BookSearcher? = null
 
@@ -209,6 +217,9 @@ class ViewerController(
         lastCopy = copy
         lastOriginKey = originKey
         awaitingBookDisplay = false
+        // Drop the outgoing book's prefetch hint; the first content_file_changed
+        // for the new book will repopulate it.
+        currentSpineIndex = -1
         // currentBookHash, bookmarks and highlights intentionally keep the
         // outgoing book's values: every signal that can still arrive during
         // the open window comes from the outgoing page and must attribute to
@@ -386,6 +397,19 @@ class ViewerController(
         // view_created only describes the lifetime of the viewer shell.
         if (!name.isNullOrEmpty()) {
             _state.value = _state.value.copy(currentName = name)
+            // Prefetch the next two spine items so the user's next page turn
+            // lands on already-warmed streams. Look up by name in the
+            // currently open book's spine list; unknown / popup pages just
+            // get a no-op (currentSpineIndex stays -1 until the next match).
+            val book = bookServer.currentBook
+            val spine = book?.spine
+            if (spine != null && spine.isNotEmpty()) {
+                val idx = spine.indexOf(name)
+                if (idx >= 0) {
+                    currentSpineIndex = idx
+                    bookServer.prefetchSpine(currentIdx = idx, ahead = 2)
+                }
+            }
         }
         if (awaitingBookDisplay && !name.isNullOrEmpty()) {
             awaitingBookDisplay = false

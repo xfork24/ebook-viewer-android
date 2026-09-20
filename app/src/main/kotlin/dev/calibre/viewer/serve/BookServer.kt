@@ -20,6 +20,7 @@
 
 package dev.calibre.viewer.serve
 
+import androidx.annotation.VisibleForTesting
 import java.io.IOException
 
 class BookServer(
@@ -38,6 +39,10 @@ class BookServer(
      * book's lifetime of undelivered files.
      */
     private val openStreams = java.util.Collections.synchronizedSet(HashSet<CloseOnceInputStream>())
+
+    /** Visible for tests in the same module that want to assert no fd leak. */
+    @VisibleForTesting
+    internal val trackedStreamCount: Int get() = synchronized(openStreams) { openStreams.size }
 
     /**
      * Install the currently-open book; null = home page, no book files.
@@ -63,6 +68,53 @@ class BookServer(
     }
 
     val currentBook: ViewerBook? get() = book
+
+    /**
+     * Warm the next [ahead] spine files in the current book by opening each
+     * stream, reading up to [maxBytesPerFile] bytes (HTML/CSS head + initial
+     * markup — Chromium fetches the rest on demand), then closing the stream.
+     *
+     * Used by the reader: when [contentFileChanged] fires for spine item N,
+     * we call `prefetchSpine(currentIdx = N, ahead = 2)` so the next two
+     * pages start arriving while the reader is still rendering N. The
+     * prefetched streams live inside [openStreams] for their short lifetime,
+     * so a `setBook(null)` (book switch, trim) reclaims them through the
+     * same path that reclaims undelivered page reads.
+     *
+     * No-ops when no book is open, the spine is empty, the index is past the
+     * end, or any individual file is missing (the on-demand route will 404
+     * normally and the user sees the existing friendly overlay).
+     *
+     * @param currentIdx index of the spine item that just became visible
+     * @param ahead how many spine items AFTER [currentIdx] to warm
+     * @param maxBytesPerFile byte cap per file; 64 KiB fits the head of every
+     *   normal chapter while keeping worst-case memory at 2× 64 KiB.
+     */
+    fun prefetchSpine(currentIdx: Int, ahead: Int = 2, maxBytesPerFile: Int = 64 * 1024) {
+        val b = book ?: return
+        val spine = b.spine
+        if (spine.isEmpty()) return
+        val end = (currentIdx + 1 + ahead).coerceAtMost(spine.size)
+        for (i in (currentIdx + 1) until end) {
+            val name = spine[i]
+            val bf = try { b.getData(name) } catch (_: IOException) { null } ?: continue
+            val tracked = CloseOnceInputStream(bf.stream, onClose = { openStreams.remove(it) })
+            openStreams.add(tracked)
+            try {
+                val buf = ByteArray(maxBytesPerFile)
+                var total = 0
+                while (total < maxBytesPerFile) {
+                    val n = tracked.read(buf, total, buf.size - total)
+                    if (n <= 0) break
+                    total += n
+                }
+            } catch (_: IOException) {
+                // file vanished mid-prefetch; swallow — on-demand fetch will 404
+            } finally {
+                tracked.close()
+            }
+        }
+    }
 
     /** @param path decoded URL path including the leading '/'. */
     fun handle(method: String, scheme: String, host: String, path: String): ServeResult {

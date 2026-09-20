@@ -8,6 +8,9 @@
 package dev.calibre.viewer.serve
 
 import dev.calibre.viewer.parser.epub.MimeTypes
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -20,6 +23,12 @@ class ViewerBook private constructor(
     val manifestBytes: ByteArray,
     val metadataBytes: ByteArray,
     val manifestMime: String,
+    /**
+     * Spine file names as declared by calibre's `manifest.spine[]`, in
+     * reading order. Empty when the manifest lacks a `spine` array — the
+     * caller should then skip prefetch but still serve on demand.
+     */
+    val spine: List<String>,
 ) {
 
     companion object {
@@ -59,7 +68,23 @@ class ViewerBook private constructor(
                 manifestBytes = manifestBytes,
                 metadataBytes = metadataBytes,
                 manifestMime = MimeTypes.guessType(MANIFEST_NAME),
+                spine = parseSpine(manifestBytes),
             )
+        }
+
+        /**
+         * Extract the spine filename list from a calibre manifest JSON blob.
+         * Best-effort: malformed JSON or a missing `spine` array returns
+         * empty. The list preserves reading order — index N is the Nth
+         * spine item the viewer will render.
+         */
+        private fun parseSpine(manifestBytes: ByteArray): List<String> = try {
+            val root = Json.parseToJsonElement(manifestBytes.toString(Charsets.UTF_8))
+            val obj = root as? kotlinx.serialization.json.JsonObject ?: return emptyList()
+            val spine = obj["spine"] as? JsonArray ?: return emptyList()
+            spine.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.jsonPrimitive?.content }
+        } catch (e: Exception) {
+            emptyList()
         }
 
         const val MANIFEST_NAME = "calibre-book-manifest.json"

@@ -318,6 +318,14 @@ def main() -> None:
     # to 20px. Mirror UiData.kt:put("ui_font_sz", "10pt") here.
     index_html = (
         '<!DOCTYPE html>\n<html><head>'
+        # Preload hint: Chromium starts fetching viewer.js as soon as the HTML
+        # parser sees this tag, in parallel with the rest of <head> parsing.
+        # Saves ~100-200 ms on cold start (2.7 MiB viewer.js, all of which has
+        # to be parsed before the page becomes interactive). The actual
+        # <script src="/viewer.js"> tag below remains the executor — preload
+        # is purely a fetch hint. crossorigin mirrors the production resource
+        # delivery (HTTPS via WebViewAssetLoader, same-origin virtual host).
+        '<link rel="preload" as="script" href="/viewer.js" crossorigin>'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         '<style>html{font-size:10pt !important}</style>'
         f'<style>{reset}</style><style>{base_css}</style>{eink_motion_css}'

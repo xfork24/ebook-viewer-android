@@ -38,4 +38,31 @@ class ViewerAssetsLayoutTest {
         assertFalse(js.contains("android-centered-secondary-menu"))
         assertFalse(js.contains(".android-aligned-secondary-list>ul{margin-top:auto"))
     }
+
+    @Test
+    fun `index html preloads viewer js so cold start can fetch in parallel with head parsing`() {
+        // The 2.7 MiB viewer.js has to download + parse before the page is
+        // interactive; without a preload hint the HTML parser only starts
+        // fetching it when it hits <script src="/viewer.js"> deep inside
+        // the body, after every style/sprite/reset tag in <head>. The
+        // <link rel="preload"> tag lets Chromium start the network round
+        // trip in parallel with the rest of <head>, saving ~100-200 ms on
+        // cold start (and proportionally more on slow networks).
+        val html = asset("index.html").readText()
+        // Must be present in <head> (not just anywhere in the file), before
+        // the actual <script src> tag — preload has to fire during head
+        // parsing.
+        val headEnd = html.indexOf("</head>")
+        assertTrue(headEnd > 0, "index.html must have a </head>")
+        val head = html.substring(0, headEnd)
+        assertTrue(
+            head.contains("""<link rel="preload" as="script" href="/viewer.js" crossorigin>"""),
+            "index.html <head> must preload viewer.js; head was:\n$head",
+        )
+        // And the preload must precede the <script src="/viewer.js"> tag.
+        val preloadAt = head.indexOf("rel=\"preload\"")
+        val scriptAt = html.indexOf("""<script src="/viewer.js">""")
+        assertTrue(preloadAt > 0 && scriptAt > 0, "both preload and script tags must exist")
+        assertTrue(preloadAt < scriptAt, "preload tag must come before the script tag")
+    }
 }

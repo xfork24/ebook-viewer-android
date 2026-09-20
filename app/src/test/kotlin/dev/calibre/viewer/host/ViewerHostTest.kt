@@ -507,6 +507,24 @@ class ViewerHostTest {
     }
 
     @Test
+    fun `page turn keys are inert without an open book`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+
+        // Home page: the keys are consumed but nothing reaches the page.
+        controller.pageTurn("pageup")
+        controller.pageTurn("pagedown")
+        assertTrue(js.fromPythonCalls().none { "trigger_shortcut" in it })
+
+        // Once a book is displayed the same key turns pages again.
+        openAndDisplay(controller, js) { minimalEpub("v1") }
+        controller.pageTurn("pageup")
+        assertTrue(js.fromPythonCalls().any { "trigger_shortcut" in it })
+    }
+
+    @Test
     fun `native picker error is visible before open starts`() {
         val controller = newController(tempRoot(), FakeJs(), FakeHostUi())
 

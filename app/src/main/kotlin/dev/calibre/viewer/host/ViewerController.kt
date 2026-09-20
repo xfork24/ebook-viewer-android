@@ -274,6 +274,11 @@ class ViewerController(
 
     /** Volume/page-turn keys → trigger_shortcut (pageup/pagedown). */
     fun pageTurn(shortcut: String) {
+        // No book open → the page has nothing to turn; skip the send (the
+        // home page's trigger_shortcut is inert at best). The key is still
+        // consumed in the activity: letting volume keys through just to
+        // flash the system volume UI on every turn is the worse outcome.
+        if (!_state.value.bookOpen) return
         bridge?.executeWhenReady("trigger_shortcut", JsonPrimitive(shortcut))
     }
 

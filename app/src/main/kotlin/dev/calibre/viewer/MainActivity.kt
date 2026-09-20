@@ -78,7 +78,6 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // The reader owns the whole panel. Lay out edge-to-edge so system
         // bars or panel cutouts never shrink the window (on iReader SmartOS
         // the app otherwise windows short and the page keeps the shrunken
@@ -149,6 +148,16 @@ class MainActivity : ComponentActivity(), HostUi {
         composeHolder.setContent {
             val state by controller.state.collectAsState()
             LaunchedEffect(rebuildCounter.intValue) { rebuildHost() }
+            // Reading keeps the e-ink panel awake; the home/error pages have
+            // no reason to burn it. Add/clear is idempotent, so an effect
+            // rerun with the same bookOpen value is a no-op.
+            LaunchedEffect(state.bookOpen) {
+                if (state.bookOpen) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
             composeHolder.visibility = when {
                 state.preparing || state.loadingMessage != null ||
                     state.errorMessage != null || state.tocVisible || state.searchVisible ||

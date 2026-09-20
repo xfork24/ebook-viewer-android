@@ -426,13 +426,48 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // UI_HIDDEN and every harsher level mean the app is no longer
-        // visible — the only state where dropping the asset LRU pays off.
-        // The RUNNING_* levels arrive while the reader is on screen, and the
-        // WebView's own memory dwarfs anything we control here.
+        // Level values matter and are NOT monotonic in "severity" as a
+        // reader would guess: the RUNNING_* levels (5/10/15) are numerically
+        // BELOW UI_HIDDEN (20). Split into the three real states:
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE &&
+            level <= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        ) {
+            // App still visible: the WebView's own memory dwarfs anything we
+            // could drop, and stalling a mid-read fetch is the worse outcome
+            // on e-ink (a frozen page turn). Observe only — these snapshots
+            // are what OOM post-mortems are diagnosed from.
+            Log.i(TAG, "onTrimMemory(running) level=$level ${memorySnapshot()}")
+            return
+        }
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            // Backgrounded AND the system is pressing (40/60/80): reclaim
+            // everything that survives a setBook — the paused page's
+            // abandoned streams, the asset LRU, and a tighter render-cache
+            // budget than the startup sweep's. The currently open book is
+            // never evicted (protect inside trimRenderCache).
+            if (::assetSource.isInitialized) assetSource.clearCache()
+            controller.reclaimAbandonedStreams()
+            controller.trimRenderCache(maxBytes = TRIM_CACHE_BG_BYTES)
+            Log.i(TAG, "onTrimMemory(background-pressure) level=$level ${memorySnapshot()}")
+            return
+        }
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && ::assetSource.isInitialized) {
+            // Plain UI_HIDDEN (20): app not visible, no system pressure yet.
+            // The asset LRU is the only cheap drop — keep the old behavior.
             assetSource.clearCache()
         }
+    }
+
+    /** One-line memory snapshot for trim logs: system avail + our own PSS. */
+    private fun memorySnapshot(): String = try {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val sys = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val own = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
+        "availMem=${sys.availMem / (1024 * 1024)}MB totalPss=${own.totalPss}kB"
+    } catch (e: Exception) {
+        // Odd firmwares / restricted profiles: never let the observer crash
+        // the trim path it is supposed to be measuring.
+        "unavailable(${e.javaClass.simpleName})"
     }
 
     override fun onDestroy() {
@@ -527,6 +562,10 @@ class MainActivity : ComponentActivity(), HostUi {
 
     private companion object {
         const val TAG = "MainActivity"
+
+        // Render-cache budget when the system presses a backgrounded app
+        // (TRIM_BACKGROUND and up): half the startup sweep's 256 MB cap.
+        const val TRIM_CACHE_BG_BYTES = 128L * 1024 * 1024
 
         // Qt resetFontFamily → the platform's default families; the CSS
         // generic families are the portable Android equivalent.

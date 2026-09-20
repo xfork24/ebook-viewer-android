@@ -121,6 +121,23 @@ class BookServerTest {
     }
 
     @Test
+    fun `closeAllStreams reclaims tracked streams without dropping the book`() {
+        // The trim-level memory path (R-PERF-04) reclaims the paused page's
+        // undrained streams via the same building block setBook uses — but
+        // must leave the installed book alone.
+        val s = serverWithBook()
+        val r1 = s.get("/book/ch1.html")
+        val r2 = s.get("/book/style.css")
+        assertTrue(r1 is ServeResult.OkStream && r2 is ServeResult.OkStream)
+        assertEquals(2, s.trackedStreamCount)
+        s.closeAllStreams()
+        assertEquals(0, s.trackedStreamCount)
+        assertTrue(((r1 as ServeResult.OkStream).data as CloseOnceInputStream).isClosed)
+        assertTrue(((r2 as ServeResult.OkStream).data as CloseOnceInputStream).isClosed)
+        assertNotNull(s.currentBook, "trim must reclaim fds, not uninstall the book")
+    }
+
+    @Test
     fun `setBook reclaims streams the previous page never drained`() {
         val s = serverWithBook()
         val r = s.get("/book/style.css")

@@ -490,6 +490,16 @@ class ViewerController(
         }
     }
 
+    /**
+     * Reclaim every book stream Chromium has not drained (the same set the
+     * setBook-switch path reclaims). Trim-level memory pressure path: the
+     * paused page's abandoned fetches are fd + buffer dead weight, and a
+     * still-live page re-fetches on demand if one of them was mid-read.
+     */
+    fun reclaimAbandonedStreams() {
+        bookServer.closeAllStreams()
+    }
+
     override fun toggleToc() {
         _state.value = _state.value.copy(tocVisible = !_state.value.tocVisible)
     }

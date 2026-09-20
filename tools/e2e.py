@@ -1103,6 +1103,206 @@ def group_D(r: Runner, apk: Path) -> None:
 
 
 # ----------------------------------------------------------------------
+# Group fix — regression checks for the Preferences/UI fix batch
+# ----------------------------------------------------------------------
+def group_fix(r: Runner) -> None:
+    """fix. Verification of the Preferences fix batch: background-image
+    picker hand-off (P1), system font enumeration (P2), Aa icon alignment
+    (P3), plus the TOC fast-fling survival guard for the shared-indication
+    crash fix."""
+    print("== group fix: preferences/ui fixes ==")
+    adb, cdp, ev, state = r.adb, r.cdp, r.ev, r.state
+
+    # Self-contained like the other groups: fresh app, book open.
+    adb.push_books()
+    adb.force_stop()
+    wait(0.5)
+    adb.run("shell", "am", "start",
+            "-a", "android.intent.action.VIEW",
+            "-d", f"{DEVICE_BOOKS_URI}/{state.book_on_sd}",
+            "-t", "application/epub+zip", ACTIVITY)
+    wait_app_ping(adb, 8)
+    page_ready(cdp, timeout=10)
+    wait(1.0)
+    # fix4 scans the crash buffer afterwards; start from a clean one so an
+    # older crash on the emulator cannot fail the survival check. Also clear
+    # any hung system picker left on screen by an earlier run: this
+    # emulator's DocumentsUI occasionally ANRs and then swallows every tap.
+    adb.run("logcat", "-b", "crash", "-c")
+    adb.shell("am force-stop com.google.android.documentsui")
+
+    # Same panel-navigation idiom as group C: the backdrop click closes the
+    # overlay stack, the top-right zone opens the reader menu.
+    def overlay_state() -> dict:
+        return cdp.evaluate("""
+            (function(){
+              var root=document.getElementById('book-overlay');
+              var title=root && root.querySelector('.top-bar-title');
+              return {visible:!!root && root.style.display!=='none',
+                      title:title ? (title.textContent||'').trim() : ''};
+            })()
+        """) or {}
+
+    def close_overlay_stack() -> None:
+        for _ in range(4):
+            if not overlay_state().get("visible"):
+                return
+            cdp.evaluate("document.getElementById('book-overlay')?.click()")
+            wait(0.15)
+
+    def open_menu() -> bool:
+        """Tap the top-right zone until the reader menu's action bar is live.
+        The first tap right after book-open races the page settling and can
+        be silently swallowed — poll, then re-tap."""
+        close_overlay_stack()
+        for _ in range(4):
+            adb.tap(1000, 200)
+            for _ in range(8):
+                wait(0.5)
+                if cdp.evaluate(
+                    "!!document.querySelector('.read-book-main-overlay-actions')"
+                ):
+                    return True
+        return False
+
+    def open_panel(action: str, child: str | None = None) -> tuple[bool, str]:
+        if not open_menu():
+            return False, "reader menu did not open"
+        if not cdp.click_text(action):
+            return False, f"missing toolbar action: {action}"
+        wait(0.6)
+        if child and not cdp.click_text(child):
+            return False, f"missing {action} child: {child}"
+        wait(0.6)
+        current = overlay_state()
+        return bool(current.get("visible")), str(current.get("title", ""))
+
+    # fix1: styles_change_image_picker — AUTO  (focus leaves the app to the
+    # system file picker; the change_background_image signal chain works)
+    def styles_change_image_picker():
+        opened, title = open_panel("Preferences", "Styles")
+        if not opened:
+            return False, f"Styles page did not open: {title}", []
+        if not cdp.click_text("Change image"):
+            return False, "Change image button not found on Styles page", []
+        wait(1.5)
+        focus = adb.shell("dumpsys window | grep mCurrentFocus | head -1")
+        # The system picker (DocumentsUI or a vendor equivalent) must hold
+        # focus now — the whole P1 fix is this host hand-off. Compare against
+        # the MainActivity component, NOT the package: a hung picker's ANR
+        # dialog is titled "Application Error: <pkg>", which also means our
+        # activity lost focus (this emulator's DocumentsUI ANRs sometimes —
+        # an emulator defect; real hardware picks normally).
+        took = "MainActivity" not in focus
+        # BACK cannot clear a hung picker (input dispatch is dead); a
+        # force-stop returns focus deterministically either way.
+        adb.shell("am force-stop com.google.android.documentsui")
+        wait(1.0)
+        sshot = ev.path("fix", "01-styles-change-image-picker", "png")
+        adb.screencap(sshot)
+        return took, f"focus: {focus.strip()[:90]}", [str(sshot)]
+
+    r.run("fix", "01-styles-change-image-picker", AUTO, styles_change_image_picker)
+
+    # fix2: prefs_fonts_system_families — AUTO  (serif_family select mirrors
+    # the device fonts.xml families — the host enumeration, not the static
+    # fallback list; this emulator has 9 named families, sans-serif-medium
+    # is an <alias> and deliberately not listed)
+    def prefs_fonts_system_families():
+        opened, title = open_panel("Preferences", "Fonts")
+        if not opened:
+            return False, f"Fonts page did not open: {title}", []
+        opts = cdp.evaluate("""
+            (function(){
+              var s = document.querySelector('select[name=serif_family]');
+              return s ? Array.prototype.map.call(s.options, function(o){return o.value;})
+                       : null;
+            })()
+        """)
+        if not opts:
+            return False, "serif_family select not found on Fonts page", []
+        sshot = ev.path("fix", "02-prefs-fonts-system-families", "png")
+        adb.screencap(sshot)
+        families_xml = adb.shell(
+            "grep -o '<family name=\"[^\"]*\"' /system/etc/fonts.xml 2>/dev/null "
+            "| sed 's/<family name=\"//;s/\"//'")
+        expected = {ln.strip() for ln in families_xml.splitlines() if ln.strip()}
+        if not expected:
+            # fonts.xml unreadable on this vendor build — the host falls back
+            # to the static list; at least require more than that list of 8.
+            return len(opts) > 8, f"serif options={len(opts)} (no fonts.xml)", [str(sshot)]
+        got = {o for o in opts if o}
+        missing = sorted(f.lower() for f in expected if f.lower() not in got)
+        ok = bool(got) and not missing
+        return ok, (f"serif options={len(got)}, fonts.xml families={len(expected)}, "
+                    f"missing={missing}"), [str(sshot)]
+
+    r.run("fix", "02-prefs-fonts-system-families", AUTO, prefs_fonts_system_families)
+
+    # fix3: menu_aa_icon_alignment — AUTO  (the Aa text-icon's box is no
+    # longer pinned to 1.5em; it hugs its glyph and centers in the button)
+    def menu_aa_icon_alignment():
+        close_overlay_stack()
+        adb.tap(1000, 200)
+        wait(1.0)
+        geo = cdp.evaluate("""
+            (function(){
+              var s = document.querySelector('.read-book-main-overlay-text-icon');
+              if (!s) return null;
+              var b = s.closest('button') || s.parentElement;
+              var sr = s.getBoundingClientRect(), br = b.getBoundingClientRect();
+              var cs = getComputedStyle(s);
+              var spanCy = sr.top + sr.height / 2, btnCy = br.top + br.height / 2;
+              return {h: sr.height, fs: parseFloat(cs.fontSize),
+                      boxDelta: Math.abs(spanCy - btnCy)};
+            })()
+        """)
+        if not geo:
+            return False, "Aa text-icon not found (menu not open?)", []
+        sshot = ev.path("fix", "03-menu-aa-icon-alignment", "png")
+        adb.screencap(sshot)
+        boxOk = abs(geo["h"] - geo["fs"]) <= 1.5
+        centerOk = geo["boxDelta"] < 6
+        ok = boxOk and centerOk
+        return ok, (f"span h={geo['h']:.1f} vs font={geo['fs']:.1f}, "
+                    f"centre off={geo['boxDelta']:.1f}px"), [str(sshot)]
+
+    r.run("fix", "03-menu-aa-icon-alignment", AUTO, menu_aa_icon_alignment)
+
+    # fix4: toc_fast_fling_survival — AUTO  (fast alternating flings in the
+    # Compose TOC panel must not crash: NoIndication hands every clickable
+    # a fresh Modifier.Node, so recycling rows never double-delegate)
+    def toc_fast_fling_survival():
+        if not open_menu():
+            return False, "reader menu did not open", []
+        if not cdp.click_text("Table of Contents"):
+            return False, "Table of Contents action not found", []
+        wait(1.2)
+        # TOC is a native Compose panel: the WebView overlay hides by design,
+        # so CDP cannot see it. Verify visually — the right-side panel's thin
+        # dark border — before hammering it with flings.
+        probe = ev.path("fix", "04-toc-panel-probe", "png")
+        adb.screencap(probe)
+        panel = compose_box_tap(adb, probe)
+        if panel is None:
+            return False, "TOC Compose panel not detected on screen", [str(probe)]
+        pid_before = adb.shell("pidof dev.calibre.viewer").strip()
+        for i in range(20):
+            adb.run("shell", "input", "swipe", "540", "1800", "540", "400", "80")
+            wait(0.12)
+            adb.run("shell", "input", "swipe", "540", "700", "540", "1900", "80")
+            wait(0.12)
+        pid_after = adb.shell("pidof dev.calibre.viewer").strip()
+        crash = adb.run("logcat", "-b", "crash", "-d", "-t", "200")
+        ok = bool(pid_after) and pid_after == pid_before and "FATAL EXCEPTION" not in crash
+        sshot = ev.path("fix", "04-toc-fast-fling-survival", "png")
+        adb.screencap(sshot)
+        return ok, f"pid {pid_before or '?'} → {pid_after or 'DEAD'}", [str(sshot)]
+
+    r.run("fix", "04-toc-fast-fling-survival", AUTO, toc_fast_fling_survival)
+
+
+# ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
@@ -1110,7 +1310,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="emulator-5554")
     p.add_argument("--apk", type=Path,
                    default=Path("app/build/outputs/apk/debug/app-debug.apk"))
-    p.add_argument("--group", choices=["A", "B", "C", "D", "all"], default="all")
+    p.add_argument("--group", choices=["A", "B", "C", "D", "fix", "all"], default="all")
     p.add_argument("--book", default="book1.epub")
     return p.parse_args()
 
@@ -1131,7 +1331,7 @@ def main() -> int:
     print(f"evidence → {EVIDENCE_ROOT}")
     adb.install(args.apk)
 
-    groups = [args.group] if args.group != "all" else ["A", "B", "C", "D"]
+    groups = [args.group] if args.group != "all" else ["A", "B", "C", "D", "fix"]
     for g in groups:
         if g == "A":
             group_A(r, args.apk)
@@ -1141,6 +1341,8 @@ def main() -> int:
             group_C(r)
         elif g == "D":
             group_D(r, args.apk)
+        elif g == "fix":
+            group_fix(r)
 
     cdp.close()
     js, md = r.write_summary()

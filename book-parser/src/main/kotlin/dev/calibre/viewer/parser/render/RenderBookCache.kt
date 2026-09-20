@@ -27,8 +27,14 @@
 package dev.calibre.viewer.parser.render
 
 import dev.calibre.viewer.parser.util.pyJsonString
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import java.util.logging.Logger
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
+
+private val LOG = Logger.getLogger("dev.calibre.viewer.parser.render.RenderBookCache")
 
 class RenderBookCache(private val rootDir: File) {
 
@@ -36,6 +42,11 @@ class RenderBookCache(private val rootDir: File) {
     private val finishedDir = File(ev2Dir, "f")
     private val transientDir = File(ev2Dir, "t")
     private val indexFile = File(ev2Dir, "index.json")
+
+    // On-disk format for index.json. v1 = plain UTF-8 JSON (legacy); v2 =
+    // magic "EV2C" (4 bytes) + gzip(JSON). Reads transparently fall back to
+    // v1 when the magic is missing; the next write rewrites in v2.
+    private val MAGIC_V2 = byteArrayOf(0x45, 0x56, 0x32, 0x43) // "EV2C"
 
     init {
         finishedDir.mkdirs()
@@ -157,8 +168,7 @@ class RenderBookCache(private val rootDir: File) {
         val stale = idx.keys - diskHashes
         if (stale.isNotEmpty()) {
             for (hash in stale) idx.remove(hash)
-            indexFile.parentFile?.mkdirs()
-            indexFile.writeText(serializeIndex(idx), Charsets.UTF_8)
+            atomicWriteIndex(idx)
         }
         val byAge = idx.keys
             .filter { it != protect && File(finishedDir, it).isDirectory }
@@ -245,7 +255,7 @@ class RenderBookCache(private val rootDir: File) {
     @Suppress("UNCHECKED_CAST")
     private fun readIndex(): MutableMap<String, Map<String, Any?>> {
         if (!indexFile.isFile) return HashMap()
-        val text = indexFile.readText(Charsets.UTF_8)
+        val text = readIndexJsonText()
         if (text.isBlank()) return HashMap()
         // Hand-rolled parse: {"hash":{"path":"...","sourcePath":"..."}}.
         // The values come from our own writer so we control the escaping;
@@ -271,6 +281,46 @@ class RenderBookCache(private val rootDir: File) {
         return ans
     }
 
+    /**
+     * Decode index.json bytes → UTF-8 text. v2 (gzip + magic) and v1
+     * (plain UTF-8 JSON) are both accepted. On a malformed gzip blob we
+     * quarantine the corrupt file (mirrors StoreFiles.quarantineCorrupt)
+     * so the next read starts fresh; the rendered tree stays intact.
+     */
+    private fun readIndexJsonText(): String {
+        val raw = indexFile.readBytes()
+        if (raw.size >= MAGIC_V2.size && raw.copyOfRange(0, MAGIC_V2.size).contentEquals(MAGIC_V2)) {
+            val payload = raw.copyOfRange(MAGIC_V2.size, raw.size)
+            return try {
+                GZIPInputStream(payload.inputStream()).use { it.readBytes().toString(Charsets.UTF_8) }
+            } catch (e: Exception) {
+                LOG.warning("ev2 index v2 magic present but gzip failed; quarantining ${indexFile.name}")
+                quarantineIndex()
+                return ""
+            }
+        }
+        // v1: plain UTF-8 JSON. Trust the legacy format's own validation
+        // (the regex parse below rejects anything that isn't a well-formed
+        // record).
+        return raw.toString(Charsets.UTF_8)
+    }
+
+    /**
+     * Best-effort quarantine of the index file when gzip parse fails.
+     * Renames to <name>.corrupt and lets the next write recreate it from
+     * the in-memory index (caller re-reads after this returns "").
+     */
+    private fun quarantineIndex() {
+        try {
+            if (!indexFile.isFile) return
+            val corrupt = File(indexFile.parentFile, indexFile.name + ".corrupt")
+            corrupt.delete()
+            if (!indexFile.renameTo(corrupt)) indexFile.delete()
+        } catch (_: Exception) {
+            // best-effort
+        }
+    }
+
     private fun writeIndexEntry(hash: String, sourceFile: File, renderDir: File, transient: Boolean) {
         val idx = readIndex()
         idx[hash] = linkedMapOf(
@@ -281,14 +331,13 @@ class RenderBookCache(private val rootDir: File) {
             "accessed" to System.currentTimeMillis(),
             "transient" to transient,
         )
-        indexFile.parentFile?.mkdirs()
-        indexFile.writeText(serializeIndex(idx), Charsets.UTF_8)
+        atomicWriteIndex(idx)
     }
 
     private fun removeIndexEntry(hash: String) {
         val idx = readIndex()
         if (idx.remove(hash) != null) {
-            indexFile.writeText(serializeIndex(idx), Charsets.UTF_8)
+            atomicWriteIndex(idx)
         }
     }
 
@@ -297,7 +346,36 @@ class RenderBookCache(private val rootDir: File) {
         val entry = idx[hash]?.toMutableMap() ?: return
         entry["accessed"] = System.currentTimeMillis()
         idx[hash] = entry
-        indexFile.writeText(serializeIndex(idx), Charsets.UTF_8)
+        atomicWriteIndex(idx)
+    }
+
+    /**
+     * Atomic write of [idx] as v2 (gzip + magic). Mirrors the
+     * tmp+rename shape used by viewer-core StoreFiles.atomicWriteText so
+     * a process kill mid-write leaves the file fully old or fully new —
+     * never half a gzip blob (which would still be detectable on read).
+     */
+    private fun atomicWriteIndex(idx: Map<String, Map<String, Any?>>) {
+        indexFile.parentFile?.mkdirs()
+        val json = serializeIndex(idx)
+        val payload = gzip(json.toByteArray(Charsets.UTF_8))
+        val tmp = File(indexFile.parentFile, indexFile.name + ".tmp")
+        try {
+            tmp.writeBytes(payload)
+            if (!tmp.renameTo(indexFile)) {
+                indexFile.writeBytes(payload)
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            tmp.delete()
+            throw e
+        }
+    }
+
+    private fun gzip(input: ByteArray): ByteArray {
+        val bos = ByteArrayOutputStream(input.size / 4)
+        GZIPOutputStream(bos).use { it.write(input) }
+        return MAGIC_V2 + bos.toByteArray()
     }
 
     private fun serializeIndex(idx: Map<String, Map<String, Any?>>): String {

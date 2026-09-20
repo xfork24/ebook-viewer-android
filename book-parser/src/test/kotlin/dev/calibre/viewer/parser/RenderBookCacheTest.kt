@@ -7,7 +7,10 @@
 package dev.calibre.viewer.parser
 
 import dev.calibre.viewer.parser.render.RenderBookCache
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -143,11 +146,39 @@ class RenderBookCacheTest {
         val hash = cache.calculateBookHash(src)
         check(finishedDir.name == hash) { "dir ${finishedDir.name} != hash $hash" }
         val idxFile = File(root, "ev2/index.json")
-        val text = idxFile.readText()
+        val text = decodeIndexText(idxFile)
         val entry = Regex("\"$hash\":\\{[^{}]*\\}").find(text)?.value ?: error("no index entry for $hash")
         val stamped = System.currentTimeMillis() - ageMillis
         val updated = entry.replaceFirst(Regex("\"accessed\":\\d+"), "\"accessed\":$stamped")
-        idxFile.writeText(text.replace(entry, updated))
+        idxFile.writeBytes(encodeIndexText(text.replace(entry, updated)))
+    }
+
+    /**
+     * Decode index.json on-disk bytes to UTF-8 text, transparently handling
+     * both v1 (plain JSON) and v2 (magic + gzip). Mirrors the private helper
+     * inside RenderBookCache — duplicated here so the test surface stays
+     * pure-JVM with no need for a `@VisibleForTesting` accessor on the
+     * production class.
+     */
+    private val magicV2 = byteArrayOf(0x45, 0x56, 0x32, 0x43) // "EV2C"
+
+    private fun decodeIndexText(file: File): String {
+        val raw = file.readBytes()
+        if (raw.size >= magicV2.size &&
+            raw.copyOfRange(0, magicV2.size).contentEquals(magicV2)
+        ) {
+            val payload = raw.copyOfRange(magicV2.size, raw.size)
+            return GZIPInputStream(payload.inputStream()).use {
+                it.readBytes().toString(Charsets.UTF_8)
+            }
+        }
+        return raw.toString(Charsets.UTF_8)
+    }
+
+    private fun encodeIndexText(text: String): ByteArray {
+        val bos = ByteArrayOutputStream()
+        GZIPOutputStream(bos).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        return magicV2 + bos.toByteArray()
     }
 
     @Test
@@ -222,10 +253,10 @@ class RenderBookCacheTest {
         // purge, index.json keeps the dead hash forever.
         val hash = cache.calculateBookHash(src)
         File(root, "ev2/f/$hash").deleteRecursively()
-        val idxBefore = File(root, "ev2/index.json").readText()
+        val idxBefore = decodeIndexText(File(root, "ev2/index.json"))
         assertTrue(hash in idxBefore)
         cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
-        val idxAfter = File(root, "ev2/index.json").readText()
+        val idxAfter = decodeIndexText(File(root, "ev2/index.json"))
         assertFalse(hash in idxAfter, "stale index entry must be purged")
     }
 
@@ -256,10 +287,100 @@ class RenderBookCacheTest {
         cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
         // After a settling sweep: every surviving f/<hash> dir has an index
         // entry, and every index entry has a surviving dir (stale purged).
-        val idxText = File(root, "ev2/index.json").readText()
+        val idxText = decodeIndexText(File(root, "ev2/index.json"))
         val indexed = Regex("\"([0-9a-f]{40})\"\\s*:").findAll(idxText).map { it.groupValues[1] }.toSet()
         val dirs = File(root, "ev2/f").listFiles()!!.map { it.name }.toSet()
         for (hash in indexed) assertTrue(hash in dirs, "index entry $hash has no dir")
         for (dir in dirs) assertTrue(dir in indexed, "dir $dir has no index entry")
+    }
+
+    // ---- gzip v2 format (R-PERF-03) --------------------------------------
+
+    private val MAGIC_V2 = byteArrayOf(0x45, 0x56, 0x32, 0x43) // "EV2C"
+    private val indexFile = { root: File -> File(root, "ev2/index.json") }
+
+    @Test
+    fun `index file round-trips through gzip with v2 magic`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val src = makeFile()
+        val trans = cache.createTransient()
+        File(trans, "calibre-book-manifest.json").writeText("{}")
+        cache.commit(src, trans)
+        // On-disk bytes start with the magic prefix.
+        val bytes = indexFile(root).readBytes()
+        assertTrue(bytes.size > MAGIC_V2.size, "index must have payload after magic")
+        assertTrue(
+            bytes.copyOfRange(0, MAGIC_V2.size).contentEquals(MAGIC_V2),
+            "index must be written with v2 magic prefix",
+        )
+        // The bytes are NOT plain JSON — the gzip wrapper must shrink them.
+        val rawJson = "{\"hash\":"
+        assertFalse(rawJson.toByteArray().contentEquals(bytes.copyOfRange(0, rawJson.length)),
+            "v2 index must not be plain JSON")
+        // lookup() still works after commit (gzip read path).
+        assertNotNull(cache.lookup(src))
+    }
+
+    @Test
+    fun `v1 index parses via fallback and rewrites in v2 on next bump`() {
+        val root = tempRoot()
+        // Seed a legacy v1 index.json directly: no magic, plain JSON.
+        val src = makeFile(seed = 7)
+        val cache = RenderBookCache(root)
+        val trans = cache.createTransient()
+        File(trans, "calibre-book-manifest.json").writeText("{}")
+        val finished = cache.commit(src, trans) // this writes v2; undo it
+        val hash = cache.calculateBookHash(src)
+        // Force a v1 file into place and confirm the cache can still read it.
+        val v1Text = "{\"$hash\":{\"path\":\"${finished.path}\"," +
+            "\"sourcePath\":\"${src.path}\",\"sourceMtime\":${src.lastModified()}," +
+            "\"sourceSize\":${src.length()},\"accessed\":${System.currentTimeMillis()}," +
+            "\"transient\":false}}"
+        indexFile(root).writeText(v1Text)
+        // lookup must transparently parse the v1 file.
+        assertEquals(finished, cache.lookup(src))
+        // A subsequent write (bumpAccess inside lookup already triggered one)
+        // upgrades the file to v2 format.
+        val afterBytes = indexFile(root).readBytes()
+        assertTrue(
+            afterBytes.copyOfRange(0, MAGIC_V2.size).contentEquals(MAGIC_V2),
+            "v1 index must be promoted to v2 on next write",
+        )
+    }
+
+    @Test
+    fun `v2 index with truncated gzip blob quarantines and starts fresh`() {
+        val root = tempRoot()
+        val src = makeFile()
+        val cache = RenderBookCache(root)
+        val trans = cache.createTransient()
+        File(trans, "calibre-book-manifest.json").writeText("{}")
+        cache.commit(src, trans)
+        // Forge a v2-magic file with a truncated gzip stream after the magic.
+        // \x1f\x8b is the gzip magic but \x00\x00 is not a valid CM byte, so
+        // GZIPInputStream throws ZipException -> quarantine branch in Renderer.
+        val truncated = MAGIC_V2 + byteArrayOf(0x1f, 0x8b.toByte(), 0x00, 0x00)
+        indexFile(root).writeBytes(truncated)
+        // lookup must NOT throw: the corrupt index is moved aside and the
+        // returned dir reflects that the manifest is still on disk under
+        // f/<hash>/. What we're verifying is graceful recovery, not absence
+        // of the entry (the manifest lives independently of the index).
+        val found = cache.lookup(src)
+        assertNotNull(found, "lookup must not throw on a corrupt index")
+        // The bad file must be moved aside.
+        assertTrue(
+            File(root, "ev2/index.json.corrupt").isFile,
+            "corrupt index must be quarantined to index.json.corrupt",
+        )
+        // The next commit recreates a valid v2 index (cache "starts fresh").
+        val trans2 = cache.createTransient()
+        File(trans2, "calibre-book-manifest.json").writeText("{}")
+        cache.commit(makeFile(), trans2)
+        val writtenBytes = File(root, "ev2/index.json").readBytes()
+        assertTrue(
+            writtenBytes.copyOfRange(0, MAGIC_V2.size).contentEquals(MAGIC_V2),
+            "next write must produce a fresh v2 (magic + gzip) index",
+        )
     }
 }

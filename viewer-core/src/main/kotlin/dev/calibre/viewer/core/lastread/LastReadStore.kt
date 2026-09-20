@@ -10,6 +10,9 @@ package dev.calibre.viewer.core.lastread
 import dev.calibre.viewer.core.internal.atomicWriteText
 import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -24,6 +27,15 @@ class LastReadStore(file: File) {
     private val storeFile = file
     private val json = Json { ignoreUnknownKeys = true }
     private var entries: MutableMap<String, JsonObject>
+
+    // Write-behind, the same pattern as the other stores: updates arrive on
+    // the main thread (signal arrival, including the cross-book flush in
+    // ViewerController) and must never block on disk there. onStop, the
+    // legacy-hash migration and tests join via flush().
+    private val writeExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "last-read-writer").apply { isDaemon = true }
+        }
 
     init {
         entries = load()
@@ -47,7 +59,7 @@ class LastReadStore(file: File) {
                 "pathtoebook" to (pathtoebook?.let { JsonPrimitive(it) } ?: JsonNull),
             )
         )
-        persist()
+        persistAsync()
     }
 
     /**
@@ -57,10 +69,17 @@ class LastReadStore(file: File) {
     @Synchronized fun rekey(oldBookHash: String, newBookHash: String) {
         val entry = entries.remove(oldBookHash) ?: return
         entries[newBookHash] = entry
-        persist()
+        persistAsync()
     }
 
-    @Synchronized private fun load(): MutableMap<String, JsonObject> {
+    /** Block until every queued write has landed (onStop, migration, tests). */
+    fun flush() {
+        val done = CompletableFuture<Unit>()
+        writeExecutor.execute { done.complete(Unit) }
+        done.get()
+    }
+
+    private fun load(): MutableMap<String, JsonObject> {
         if (!storeFile.isFile) return LinkedHashMap()
         val text = try {
             storeFile.readText(Charsets.UTF_8)
@@ -95,8 +114,25 @@ class LastReadStore(file: File) {
         return frac.doubleOrNull != null
     }
 
-    @Synchronized private fun persist() {
-        storeFile.parentFile?.mkdirs()
-        atomicWriteText(storeFile, Json.encodeToString(JsonObject.serializer(), JsonObject(entries.toMap())))
+    /**
+     * Queue a full-snapshot write (the queue holds complete snapshots, so a
+     * failed write is simply retried by the next one and ordering makes the
+     * latest state win). The snapshot is encoded under the same lock as the
+     * mutation, so a queued write can never observe a half-updated map.
+     */
+    @Synchronized private fun persistAsync() {
+        val payload = Json.encodeToString(JsonObject.serializer(), JsonObject(entries.toMap()))
+        writeExecutor.execute {
+            try {
+                storeFile.parentFile?.mkdirs()
+                atomicWriteText(storeFile, payload)
+            } catch (e: Exception) {
+                LOG.warning("last-read write failed for ${storeFile.name}: $e")
+            }
+        }
+    }
+
+    companion object {
+        private val LOG = java.util.logging.Logger.getLogger("dev.calibre.viewer.core.stores")
     }
 }

@@ -126,12 +126,30 @@ class StoresTest {
     fun `last read round trips by book hash`() {
         val dir = freshDir()
         val f = File(dir, "last-read.json")
-        LastReadStore(f).update("hash1", "epubcfi(/6/4!)", 0.42, "/books/x.epub")
-        val pos = LastReadStore(f).get("hash1")!!
+        val s = LastReadStore(f)
+        s.update("hash1", "epubcfi(/6/4!)", 0.42, "/books/x.epub")
+        // In-memory immediately; on disk only once the write-behind drains.
+        assertEquals("epubcfi(/6/4!)", s.get("hash1")!!.cfi)
+        s.flush()
+        val reloaded = LastReadStore(f)
+        val pos = reloaded.get("hash1")!!
         assertEquals("epubcfi(/6/4!)", pos.cfi)
         assertEquals(0.42, pos.posFrac, 1e-9)
         assertEquals("/books/x.epub", pos.pathtoebook)
-        assertNull(LastReadStore(f).get("other"))
+        assertNull(reloaded.get("other"))
+    }
+
+    @Test
+    fun `last read rekey persists after flush`() {
+        val dir = freshDir()
+        val f = File(dir, "last-read.json")
+        val s = LastReadStore(f)
+        s.update("old", "epubcfi(/6/2)", 0.1, "/books/x.epub")
+        s.rekey("old", "new")
+        s.flush()
+        val reloaded = LastReadStore(f)
+        assertNull(reloaded.get("old"))
+        assertEquals("epubcfi(/6/2)", reloaded.get("new")!!.cfi)
     }
 
     @Test

@@ -93,6 +93,7 @@ class ViewerController(
             // already pinned — process death before they land would orphan
             // the old-hash entries forever (the migration won't re-fire).
             // Block until they're on disk, then drop the old cache entry.
+            lastReadStore.flush()
             annotationsStore.flush()
             ratesStore.flush()
             renderCache.evict(oldHash)
@@ -318,6 +319,9 @@ class ViewerController(
         lastReadJob?.cancel()
         lastReadJob = null
         flushPosition()
+        // flushPosition queues the write-behind write; join it with the rest
+        // so backgrounding really means on-disk (blocking is the point).
+        lastReadStore.flush()
         sessionStore.flush()
         ratesStore.flush()
         // Annotation/profile writes are queued off-thread; drain them too so

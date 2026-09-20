@@ -29,8 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.calibre.viewer.R
 import dev.calibre.viewer.host.SearchMode
 import dev.calibre.viewer.host.ViewerUiState
 import dev.calibre.viewer.ui.scaled
@@ -116,7 +118,7 @@ fun ViewerScreen(
         }
     }
     if (state.preparing) {
-        OverlayLabel(AnnotatedString("正在准备书籍…"))
+        OverlayLabel(AnnotatedString(stringResource(R.string.preparing_book)))
     }
     state.loadingMessage?.let { message ->
         // Qt rich text from the viewer (e.g. "…from <i>title</i>, please wait…").
@@ -170,7 +172,7 @@ private fun ErrorOverlay(message: String, onDismiss: () -> Unit) {
                         contentColor = Color.White,
                     ),
                 ) {
-                    Text("关闭")
+                    Text(stringResource(R.string.dismiss))
                 }
             }
         }

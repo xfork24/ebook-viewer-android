@@ -55,7 +55,7 @@ fun HighlightsPanel(
                     .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("高亮", color = Color.Black, fontSize = 18.sp.scaled, modifier = Modifier.weight(1f))
+                Text("Highlights", color = Color.Black, fontSize = 18.sp.scaled, modifier = Modifier.weight(1f))
                 Text(
                     "✕",
                     color = Color.Black,
@@ -67,7 +67,7 @@ fun HighlightsPanel(
             }
             if (highlights.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("暂无高亮,长按文字创建", color = Color.Black, fontSize = 14.sp.scaled)
+                    Text("No highlights yet — long-press text to create one", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             } else {
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -88,7 +88,7 @@ fun HighlightsPanel(
                                 )
                             }
                             Text(
-                                text = record.highlightedText.ifEmpty { "(空)" },
+                                text = record.highlightedText.ifEmpty { "(empty)" },
                                 color = if (record.removed) Color.Gray else Color.Black,
                                 fontSize = 14.sp.scaled,
                                 maxLines = 2,

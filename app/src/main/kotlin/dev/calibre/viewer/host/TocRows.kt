@@ -68,5 +68,5 @@ object TocRows {
     }
 
     private const val PIPE_WORKER = "--pipe-worker"
-    private const val UNTITLED = "未命名"
+    private const val UNTITLED = "Untitled"
 }

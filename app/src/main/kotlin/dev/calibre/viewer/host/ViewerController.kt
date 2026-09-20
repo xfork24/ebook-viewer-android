@@ -594,7 +594,7 @@ class ViewerController(
                 _state.value = _state.value.copy(
                     searchResults = found.toList(),
                     searching = false,
-                    searchError = "搜索失败:${e.javaClass.simpleName}",
+                    searchError = "Search failed: ${e.javaClass.simpleName}",
                 )
             }
         }
@@ -917,7 +917,7 @@ class ViewerController(
     fun profileApply(name: String) = applyProfile(name)
 
     /**
-     * ProfilesPanel "恢复默认设置" — profile_response("apply-profile", {})
+     * ProfilesPanel "Reset to defaults" — profile_response("apply-profile", {})
      * is the JS-side "Restore settings to default values" path
      * (viewer.js:49337): apply_reader_profile with an empty dict resets
      * every read_book-category setting to its default, re-renders the page
@@ -1038,10 +1038,10 @@ class ViewerController(
 
     private fun friendlyError(e: Throwable): String = when (e) {
         is InvalidBookException -> e.message ?: "Invalid book"
-        is ZipException -> "不是有效的 EPUB 文件（无法解压）"
-        is FileNotFoundException -> "找不到或无法读取书籍文件，请通过应用内“选择书籍”重新选择"
-        is SecurityException -> "无权读取所选文件，请通过应用内“选择书籍”重新授权"
-        else -> "打开书籍失败：${e.message ?: e.javaClass.simpleName}"
+        is ZipException -> "Not a valid EPUB file (cannot unzip)"
+        is FileNotFoundException -> "Book file not found or unreadable — pick it again via Open book in the app"
+        is SecurityException -> "No permission to read the selected file — re-grant access via Open book in the app"
+        else -> "Failed to open book: ${e.message ?: e.javaClass.simpleName}"
     }
 
     private companion object {

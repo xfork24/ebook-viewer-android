@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity(), HostUi {
             when (result) {
                 BookPickerResult.Cancelled -> Unit
                 BookPickerResult.MissingUri -> controller.showOpenError(
-                    "系统文件选择器没有返回可读取的文件，请换用其他文件管理器后重试",
+                    "The system file picker returned no readable file. Try a different file manager and retry.",
                 )
                 is BookPickerResult.Selected -> openRequest(result.request)
             }
@@ -256,7 +256,7 @@ class MainActivity : ComponentActivity(), HostUi {
     private fun handleOpenIntent(intent: Intent) {
         val request = intent.toBookOpenRequest()
         if (request == null) {
-            controller.showOpenError("打开请求没有包含可读取的文件地址")
+            controller.showOpenError("The open request contains no readable file address")
             return
         }
         openRequest(request)
@@ -266,7 +266,7 @@ class MainActivity : ComponentActivity(), HostUi {
         val uri = request.uri
         val scheme = uri.scheme?.lowercase()
         if (scheme != null && scheme != "content" && scheme != "file") {
-            controller.showOpenError("不支持的文件地址类型：$scheme")
+            controller.showOpenError("Unsupported file address type: $scheme")
             return
         }
         Log.i(

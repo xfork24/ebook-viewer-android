@@ -57,7 +57,7 @@ fun ProfilesPanel(
 ) {
     var local by remember(draftName) { mutableStateOf(draftName) }
 
-    // Two-step delete: the first tap arms ("确认?"), the second commits.
+    // Two-step delete: the first tap arms ("Sure?"), the second commits.
     // Resets after a pause so a stray tap can't stay armed forever.
     var armedDelete by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(armedDelete) {
@@ -87,7 +87,7 @@ fun ProfilesPanel(
                     .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("配置档案", color = Color.Black, fontSize = 18.sp.scaled, modifier = Modifier.weight(1f))
+                Text("Profiles", color = Color.Black, fontSize = 18.sp.scaled, modifier = Modifier.weight(1f))
                 Text(
                     "✕",
                     color = Color.Black,
@@ -117,12 +117,12 @@ fun ProfilesPanel(
                 TextButton(
                     onClick = { onSave(local) },
                     enabled = local.isNotBlank(),
-                ) { Text("保存当前", color = Color.Black, fontSize = 14.sp.scaled) }
+                ) { Text("Save current", color = Color.Black, fontSize = 14.sp.scaled) }
             }
 
             if (profiles.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("暂无配置档案", color = Color.Black, fontSize = 14.sp.scaled)
+                    Text("No profiles yet", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             } else {
                 val itemsList = profiles.entries.toList()
@@ -143,7 +143,7 @@ fun ProfilesPanel(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             TextButton(onClick = { onApply(entry.key) }) {
-                                Text("应用", color = Color.Black, fontSize = 14.sp.scaled)
+                                Text("Apply", color = Color.Black, fontSize = 14.sp.scaled)
                             }
                             TextButton(onClick = {
                                 if (armedDelete == entry.key) {
@@ -154,7 +154,7 @@ fun ProfilesPanel(
                                 }
                             }) {
                                 Text(
-                                    if (armedDelete == entry.key) "确认?" else "删除",
+                                    if (armedDelete == entry.key) "Sure?" else "Delete",
                                     color = Color.Black,
                                     // The armed (confirm) state distinguishes itself by
                                     // weight, not color — pure grayscale panel.
@@ -177,7 +177,7 @@ fun ProfilesPanel(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(onClick = onResetDefaults) {
-                    Text("恢复默认设置", color = Color.Black, fontSize = 14.sp.scaled)
+                    Text("Reset to defaults", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             }
         }

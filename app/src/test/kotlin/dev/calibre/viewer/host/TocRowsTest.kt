@@ -68,7 +68,7 @@ class TocRowsTest {
                 """{"title":null,"children":[],"id":2}""",
             ),
         )
-        assertEquals("未命名", rows[0].title)
+        assertEquals("Untitled", rows[0].title)
         assertEquals("多  空 白 字符", rows[1].title)
         assertEquals("", rows[2].title)
     }

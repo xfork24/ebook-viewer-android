@@ -66,7 +66,7 @@ fun TocPanel(
                     .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("目录", fontSize = 18.sp.scaled, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("Table of Contents", fontSize = 18.sp.scaled, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(
                     "✕",
                     fontSize = 18.sp.scaled,
@@ -78,7 +78,7 @@ fun TocPanel(
 
             if (rows.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("本书没有目录", color = Color.Black, fontSize = 14.sp.scaled)
+                    Text("This book has no table of contents", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             } else {
                 val listState = rememberLazyListState()
@@ -91,7 +91,7 @@ fun TocPanel(
                 LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(rows, key = { it.id }) { row ->
                         Text(
-                            text = row.title.ifEmpty { "未命名" },
+                            text = row.title.ifEmpty { "Untitled" },
                             color = Color.Black,
                             fontSize = 15.sp.scaled,
                             maxLines = 2,

@@ -14,7 +14,7 @@
 //
 // The store does not talk to the page; the controller pulls a snapshot at
 // openBook time and pushes a snapshot back on newBookmark / highlights_changed.
-// (See M2 plan §"为什么不做 host→JS 推送 bookmark 列表" — JS has no inbound
+// (See M2 plan, section on why the host does not push bookmark lists to JS —
 // `set_bookmarks` slot, so the in-page annotations_manager is a write-only
 // mirror; native panels always read the host store.)
 // Write queue is a single-thread executor so write-through is ordered and

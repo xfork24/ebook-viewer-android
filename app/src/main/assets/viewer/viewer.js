@@ -42049,9 +42049,6 @@ return this.__repr__();
         SimpleOverlay.__handles_kwarg_interpolation__ = SimpleOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         SimpleOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
-            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
-                return;
-            }
             self.overlay.hide_current_panel();
         };
         if (!SimpleOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(SimpleOverlay.prototype.on_container_click, {
@@ -42155,9 +42152,6 @@ return this.__repr__();
         GotoOverlay.__handles_kwarg_interpolation__ = GotoOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         GotoOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
-            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
-                return;
-            }
             self.overlay.hide_current_panel();
         };
         if (!GotoOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(GotoOverlay.prototype.on_container_click, {
@@ -42282,9 +42276,6 @@ return this.__repr__();
         PrefsOverlay.__handles_kwarg_interpolation__ = PrefsOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         PrefsOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
-            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
-                return;
-            }
             self.overlay.hide_current_panel();
         };
         if (!PrefsOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(PrefsOverlay.prototype.on_container_click, {
@@ -42453,9 +42444,6 @@ return this.__repr__();
             if (!self.closeable) {
                 return;
             }
-            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
-                return;
-            }
             self.overlay.hide_current_panel();
         };
         if (!OpenBook.prototype.on_container_click.__argnames__) Object.defineProperties(OpenBook.prototype.on_container_click, {
@@ -42517,9 +42505,6 @@ return this.__repr__();
         ReadingStatsOverlay.__handles_kwarg_interpolation__ = ReadingStatsOverlay.prototype.__init__.__handles_kwarg_interpolation__;
         ReadingStatsOverlay.prototype.on_container_click = function on_container_click(evt) {
             var self = this;
-            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {
-                return;
-            }
             self.overlay.hide_current_panel();
         };
         if (!ReadingStatsOverlay.prototype.on_container_click.__argnames__) Object.defineProperties(ReadingStatsOverlay.prototype.on_container_click, {
@@ -42854,6 +42839,9 @@ return this.__repr__();
         });
         Overlay.prototype.container_clicked = function container_clicked(evt) {
             var self = this;
+            if (evt && evt.target !== self.container) {
+                return;
+            }
             if (self.panels.length && typeof (ρσ_expr_temp = self.panels)[ρσ_expr_temp.length-1].on_container_click === "function") {
                 (ρσ_expr_temp = self.panels)[ρσ_expr_temp.length-1].on_container_click(evt);
             } else {

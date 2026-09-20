@@ -2,5 +2,5 @@ calibre_commit=82a55a2077e86f799c07c9c23f3a0b6144c9eed5
 calibre_describe=v9.14.0-180-g82a55a2077
 rapydscript=rapydscript-ng 0.8.6
 built_by=tools/build_viewer_js.py
-viewer.js.sha256_16=b332337688b77793
+viewer.js.sha256_16=bfee3f06dd17a8d6
 field_metadata.json.sha256_16=83d3f5eb9a7d30df

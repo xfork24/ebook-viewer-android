@@ -52,10 +52,10 @@ import dev.calibre.viewer.host.SearchResult
 import dev.calibre.viewer.ui.scaled
 
 private val MODE_LABELS = linkedMapOf(
-    SearchMode.NORMAL to "包含",
-    SearchMode.WORD to "全字匹配",
-    SearchMode.NEAR to "邻近词",
-    SearchMode.REGEX to "正则",
+    SearchMode.NORMAL to "Contains",
+    SearchMode.WORD to "Whole words",
+    SearchMode.NEAR to "Near words",
+    SearchMode.REGEX to "Regex",
 )
 
 @Composable
@@ -106,9 +106,9 @@ fun SearchPanel(
             ) {
                 Text(
                     when {
-                        searching -> "搜索中…"
-                        results.isEmpty() -> "搜索"
-                        else -> "${results.size} 个结果"
+                        searching -> "Searching…"
+                        results.isEmpty() -> "Search"
+                        else -> "${results.size} results"
                     },
                     fontSize = 16.sp.scaled,
                     fontWeight = FontWeight.Bold,
@@ -180,7 +180,7 @@ fun SearchPanel(
                     }
                 }
                 Text(
-                    "区分大小写",
+                    "Match case",
                     fontSize = 13.sp.scaled,
                     modifier = Modifier.padding(start = 4.dp.scaled),
                 )
@@ -211,17 +211,17 @@ fun SearchPanel(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp.scaled),
             ) {
-                Text("搜索", color = Color.Black, fontSize = 15.sp.scaled)
+                Text("Search", color = Color.Black, fontSize = 15.sp.scaled)
             }
 
             if (results.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(
                         when {
-                            searching -> "搜索中…"
+                            searching -> "Searching…"
                             searchError != null -> searchError
-                            query.isBlank() -> "输入要搜索的内容"
-                            else -> "无匹配结果"
+                            query.isBlank() -> "Type to search"
+                            else -> "No matches"
                         },
                         color = Color.Black,
                         fontSize = 14.sp.scaled,

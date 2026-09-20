@@ -3,7 +3,7 @@
 """
 tools/e2e.py — emulator E2E suite for ebook-viewer-android.
 
-Runs 23 tests across 4 state-ordered groups on a live emulator:
+Runs 24 tests across 4 state-ordered groups on a live emulator:
   A. startup          (clean slate; pm clear at start)
   B. reading core     (accumulates state across the book)
   C. persistence      (force-stop / restart restores)
@@ -66,6 +66,16 @@ except ImportError:
 PKG = "dev.calibre.viewer"
 ACTIVITY = f"{PKG}/.MainActivity"
 EVIDENCE_ROOT = Path("build/e2e-evidence")
+
+# Books are opened from the app's INTERNAL files dir via run-as staging:
+# targetSdk 34 + scoped storage means bare /sdcard/Download reads fail with
+# EACCES (the app declares no storage permissions, by design), and adb push
+# cannot write /sdcard/Android/data on API 30+. The push dance is
+# /data/local/tmp -> run-as cp. pm clear wipes files/, so books are
+# re-pushed at the head of groups B and C.
+HOST_BOOKS_DIR = Path("build/e2e-books")
+DEVICE_BOOKS_DIR = "/data/data/dev.calibre.viewer/files/e2e-books"
+DEVICE_BOOKS_URI = f"file://{DEVICE_BOOKS_DIR}"
 
 AUTO, SOFT, EVIDENCE = "AUTO", "SOFT", "EVIDENCE"
 
@@ -147,6 +157,38 @@ class Adb:
     def install(self, apk: Path) -> None:
         self.run("install", "-r", str(apk), timeout=180)
 
+    def push_books(self, names: list[str] | None = None) -> None:
+        """Stage host-side epubs into the app's internal files dir (see the
+        DEVICE_BOOKS_DIR note above). Idempotent; call after every pm_clear
+        that precedes book tests."""
+        if not HOST_BOOKS_DIR.is_dir():
+            raise RuntimeError(
+                f"{HOST_BOOKS_DIR} missing — stage the fixture epubs there "
+                "first (they are NOT in git; bootstrap once from wherever "
+                "your books live, e.g. "
+                "`adb pull /sdcard/Download/book1.epub build/e2e-books/`)")
+        epubs = [p for p in sorted(HOST_BOOKS_DIR.glob("*.epub"))
+                 if names is None or p.name in names]
+        if not epubs:
+            raise RuntimeError(f"no epubs found in {HOST_BOOKS_DIR}")
+        for epub in epubs:
+            self.run("push", str(epub), f"/data/local/tmp/{epub.name}",
+                     timeout=120)
+        # Shell sees /data/local/tmp; the app does not — copy in as the app.
+        # ONE shell string: adb joins separate argv with spaces, which would
+        # hand only the first word to `sh -c` and run the `&& cp` as shell
+        # (denied on /data/data — and silently, without check=True).
+        staged = " ".join(f"/data/local/tmp/{e.name}" for e in epubs)
+        self.shell(
+            f"run-as {PKG} sh -c 'mkdir -p {DEVICE_BOOKS_DIR} && "
+            f"cp {staged} {DEVICE_BOOKS_DIR}/'")
+        listing = self.shell(f"run-as {PKG} ls {DEVICE_BOOKS_DIR}")
+        landed = set(listing.split())
+        missing = [e.name for e in epubs if e.name not in landed]
+        if missing:
+            raise RuntimeError(f"book staging failed, missing on device: {missing}")
+        self.shell(f"rm -f {staged}")
+
     def pidof(self) -> str:
         return self.shell(f"pidof {PKG}")
 
@@ -210,7 +252,16 @@ class Adb:
 
     def list_fds(self) -> int:
         pid = self.pidof()
-        return int(self.shell(f"ls /proc/{pid}/fd 2>/dev/null | wc -l"))
+        if not pid:
+            return 0
+        # Plain shell cannot read /proc/<app-pid>/fd on API 30+ (denied;
+        # stderr suppressed → wc -l printed 0 and the fd test passed
+        # vacuously). The app uid can list its own fds — go through run-as.
+        out = self.shell(f"run-as {PKG} ls /proc/{pid}/fd 2>/dev/null | wc -l")
+        try:
+            return int(out)
+        except ValueError:
+            return 0
 
     def system_dir(self, name: str) -> Path:
         """Make a local copy of an app file via run-as."""
@@ -300,7 +351,10 @@ class Cdp:
         return bool(self.evaluate(f"""
             (function(){{
               var t={json.dumps(text)}; var ns=document.querySelectorAll('a,button,span,div,li,td');
-              for(var i=0;i<ns.length;i++){{
+              // Walk backwards so the deepest matching control wins. In the
+              // toolbar both <li> and its child <button> have identical text;
+              // clicking the inert parent reports success but triggers no action.
+              for(var i=ns.length-1;i>=0;i--){{
                 var n=ns[i]; var s=(n.innerText||n.textContent||'').trim();
                 if(s===t){{n.click();return true;}}
               }}return false;
@@ -478,6 +532,22 @@ def get_pos_frac(adb: Adb) -> float:
     return float(last.get("pos_frac", -2.0))
 
 
+def wait_pos_change(adb: Adb, before: float, *, timeout: float = 6.0) -> float:
+    """Poll last-read.json until pos_frac moves off `before`.
+
+    The host persists reading positions with a 2s write-behind debounce, so
+    an immediate read races the flush and a successful turn looks like a
+    no-op. Returns the new value, or `before` on timeout (caller asserts).
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        p = get_pos_frac(adb)
+        if p >= 0 and p != before:
+            return p
+        time.sleep(0.5)
+    return before
+
+
 def get_current_hash(adb: Adb) -> str:
     try:
         out = adb.store_text("last-read.json")
@@ -562,50 +632,79 @@ def group_B(r: Runner) -> None:
     print("== group B: reading core ==")
     adb, cdp, ev, state = r.adb, r.cdp, r.ev, r.state
 
+    # Group A's pm_clear wiped files/ — restage the fixture books first.
+    adb.push_books()
+
     # B1: actionview_open — AUTO
     def actionview_open():
         adb.run("shell", "am", "start",
                 "-a", "android.intent.action.VIEW",
-                "-d", f"file:///sdcard/Download/{state.book_on_sd}",
+                "-d", f"{DEVICE_BOOKS_URI}/{state.book_on_sd}",
                 "-t", "application/epub+zip",
                 ACTIVITY)
         ok = page_ready(cdp, timeout=10)
-        return ok, "book opened via ACTION_VIEW" if ok else "iframe not ready", []
+        if not ok:
+            return False, "iframe not ready", []
+        # page_ready is ALSO true on the home page — it cannot distinguish
+        # "book rendered" from "app up". The real gate is the reading
+        # position signal: a displayed book writes last-read.json (2s
+        # debounce in the host). Without this poll, a failed open (e.g.
+        # EACCES on the source) passed vacuously and every later B/C
+        # assertion read -2.0 sentinels.
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            if get_pos_frac(adb) >= 0:
+                return True, "book opened and first position reported", []
+            time.sleep(1.0)
+        return False, "book never reported a reading position", []
 
     r.run("B", "01-actionview-open", AUTO, actionview_open)
 
     # B2: volume_page_turns — AUTO  (pos_frac in last-read.json advances)
     def volume_page_turns():
+        # VOLUME_DOWN (pagedown): the book opens at its start, where pageup
+        # clamps to a legitimate no-op — a forward turn is the only direction
+        # guaranteed to move (VOLUME_UP here made this test vacuous).
+        #
+        # Warm-up presses can be silently dropped: the host writes the first
+        # reading position (B/01's pass gate) BEFORE the iframe secret
+        # handshake completes, and IframeWrapper._send_message discards any
+        # shortcut that arrives ahead of it (observed: exactly the first
+        # press lost after open). Press until pos moves, then require 3
+        # clean monotonic advances — a dropped press mid-run retries, it
+        # does not fail the sequence.
         snaps = [get_pos_frac(adb)]
-        for _ in range(4):
-            adb.volume(up=True)
-            wait(0.8)
-            snaps.append(get_pos_frac(adb))
-        # All snaps after the first must be greater-or-equal (monotone advance).
-        valid = [s for s in snaps if s >= 0]
-        mono = (len(valid) >= 2 and all(valid[i] <= valid[i + 1] for i in range(len(valid) - 1)))
-        return mono, f"pos_frac: {[round(x,3) for x in snaps]}", []
+        presses = 0
+        while len(snaps) < 4 and presses < 8:
+            presses += 1
+            adb.volume(up=False)
+            moved = wait_pos_change(adb, snaps[-1], timeout=6.0)
+            if moved != snaps[-1]:
+                snaps.append(moved)
+        mono = all(snaps[i] < snaps[i + 1] for i in range(len(snaps) - 1))
+        ok = mono and len(snaps) == 4
+        return ok, f"pos_frac: {[round(x,4) for x in snaps]} ({presses} presses)", []
 
     r.run("B", "02-volume-page-turns", AUTO, volume_page_turns)
 
     # B3: tap_page_turn — AUTO  (tap on right margin advances pos_frac)
     def tap_page_turn():
+        # The margin turn zone starts around 96% of screen width; x=1000 on
+        # a 1080-wide screen lands inside the text column (select / no-op).
         before = get_pos_frac(adb)
-        adb.tap(1000, 1200)
-        wait(1.0)
-        after = get_pos_frac(adb)
-        return after > before, f"{before:.3f} → {after:.3f}", []
+        adb.tap(1050, 1200)
+        after = wait_pos_change(adb, before, timeout=6.0)
+        return after > before, f"{before:.4f} → {after:.4f}", []
 
     r.run("B", "03-tap-page-turn", AUTO, tap_page_turn)
 
     # B4: volume_longpress_single_turn — AUTO  (long-press should be a single turn)
     def volume_longpress_single_turn():
         before = get_pos_frac(adb)
-        adb.run("shell", "input", "keyevent", "--longpress", "KEYCODE_VOLUME_UP")
-        wait(1.5)
-        after = get_pos_frac(adb)
+        adb.run("shell", "input", "keyevent", "--longpress", "KEYCODE_VOLUME_DOWN")
+        after = wait_pos_change(adb, before, timeout=7.0)
         delta = after - before
-        return 0 < delta <= 0.25, f"long-press delta={delta:.3f} (≤0.25)", []
+        return 0 < delta <= 0.25, f"long-press delta={delta:.4f} (≤0.25)", []
 
     r.run("B", "04-volume-longpress-single-turn", AUTO, volume_longpress_single_turn)
 
@@ -699,7 +798,7 @@ def group_B(r: Runner) -> None:
         wait(0.5)
         adb.run("shell", "am", "start",
                 "-a", "android.intent.action.VIEW",
-                "-d", f"file:///sdcard/Download/{state.mathjax_book}",
+                "-d", f"{DEVICE_BOOKS_URI}/{state.mathjax_book}",
                 ACTIVITY)
         wait_app_ping(adb, 10)
         ok = page_ready(cdp, timeout=10)
@@ -718,7 +817,7 @@ def group_B(r: Runner) -> None:
         wait(0.5)
         adb.run("shell", "am", "start",
                 "-a", "android.intent.action.VIEW",
-                "-d", f"file:///sdcard/Download/{state.mathml_book}",
+                "-d", f"{DEVICE_BOOKS_URI}/{state.mathml_book}",
                 ACTIVITY)
         wait_app_ping(adb, 10)
         ok = page_ready(cdp, timeout=10)
@@ -761,7 +860,10 @@ def group_B(r: Runner) -> None:
     def fd_stability_rapid_turns():
         before = adb.list_fds()
         for _ in range(20):
-            adb.key("KEYCODE_VOLUME_UP")
+            # Down, not Up: by now the book is mid-flow and a real forward
+            # turn exercises spine fetches (the fd path under test); pageup
+            # could clamp and turn this into a no-op loop.
+            adb.key("KEYCODE_VOLUME_DOWN")
             wait(0.2)
         wait(1.0)
         after = adb.list_fds()
@@ -777,7 +879,7 @@ def group_B(r: Runner) -> None:
         wait(0.5)
         adb.run("shell", "am", "start",
                 "-a", "android.intent.action.VIEW",
-                "-d", f"file:///sdcard/Download/{state.big_book}",
+                "-d", f"{DEVICE_BOOKS_URI}/{state.big_book}",
                 ACTIVITY)
         wait_app_ping(adb, 10)
         ok = page_ready(cdp, timeout=15)
@@ -815,6 +917,99 @@ def group_B(r: Runner) -> None:
 
     r.run("B", "16-dark-mode", EVIDENCE, dark_mode)
 
+    # B17: overlay_backdrop_boundary — AUTO. The regression was caused by
+    # treating every non-control descendant as outside whitespace. Exercise
+    # real bubbled click events on a non-interactive content container, then
+    # click the actual #book-overlay backdrop and require the opposite result.
+    def overlay_backdrop_boundary():
+        def overlay_state():
+            return cdp.evaluate("""
+                (function(){
+                  var root=document.getElementById('book-overlay');
+                  var title=root && root.querySelector('.top-bar-title');
+                  return {visible:!!root && root.style.display!=='none',
+                          title:title ? (title.textContent||'').trim() : ''};
+                })()
+            """) or {}
+
+        def close_overlay_stack():
+            for _ in range(3):
+                state_now = overlay_state()
+                if not state_now.get("visible"):
+                    return
+                cdp.evaluate("document.getElementById('book-overlay')?.click()")
+                wait(0.15)
+
+        def open_panel(action: str, child: str | None = None) -> tuple[bool, str]:
+            close_overlay_stack()
+            adb.tap(1000, 200)
+            wait(0.5)
+            if not cdp.click_text(action):
+                return False, f"missing toolbar action: {action}"
+            wait(0.35)
+            if child and not cdp.click_text(child):
+                return False, f"missing {action} child: {child}"
+            wait(0.35)
+            current = overlay_state()
+            return bool(current.get("visible")), str(current.get("title", ""))
+
+        def click_interior_blank():
+            return cdp.evaluate("""
+                (function(){
+                  var root=document.getElementById('book-overlay');
+                  if(!root || root.style.display==='none') return {ok:false, why:'overlay hidden'};
+                  var first=root.firstElementChild;
+                  var candidates=[first && first.lastElementChild, root.lastElementChild, first];
+                  var target=null;
+                  for(var i=0;i<candidates.length;i++){
+                    var n=candidates[i];
+                    if(!n || n===root || n.closest('.main-top-bar')) continue;
+                    var r=n.getBoundingClientRect(), s=getComputedStyle(n);
+                    if(r.width>1 && r.height>1 && s.display!=='none' && s.visibility!=='hidden'){
+                      target=n; break;
+                    }
+                  }
+                  if(!target) return {ok:false, why:'no interior blank target'};
+                  target.dispatchEvent(new MouseEvent('click', {
+                    bubbles:true, cancelable:true, view:window
+                  }));
+                  var title=root.querySelector('.top-bar-title');
+                  return {ok:true, visible:root.style.display!=='none',
+                          tag:target.tagName,
+                          title:title ? (title.textContent||'').trim() : ''};
+                })()
+            """) or {}
+
+        cases = [
+            ("Preferences", "Colors", False),
+            ("Open book", None, False),
+            ("Reading statistics", None, False),
+            ("Go to", "Metadata", True),
+        ]
+        checked = []
+        for action, child, returns_to_parent in cases:
+            opened, title = open_panel(action, child)
+            if not opened:
+                return False, title, []
+            inside = click_interior_blank()
+            if not inside.get("ok") or not inside.get("visible") or inside.get("title") != title:
+                return False, f"{action}: interior click dismissed/changed panel: {inside}", []
+
+            cdp.evaluate("document.getElementById('book-overlay')?.click()")
+            wait(0.2)
+            outside = overlay_state()
+            if returns_to_parent:
+                if not outside.get("visible") or outside.get("title") == title:
+                    return False, f"{action}: backdrop did not return to parent: {outside}", []
+            elif outside.get("visible"):
+                return False, f"{action}: backdrop did not dismiss panel: {outside}", []
+            checked.append(action + (f"/{child}" if child else ""))
+
+        close_overlay_stack()
+        return True, "checked " + ", ".join(checked), []
+
+    r.run("B", "17-overlay-backdrop-boundary", AUTO, overlay_backdrop_boundary)
+
 
 def wait_app_ping(adb: Adb, timeout: int = 10) -> str:
     deadline = time.time() + timeout
@@ -830,6 +1025,10 @@ def group_C(r: Runner) -> None:
     """C. Persistence — survives force-stop and process restart."""
     print("== group C: persistence ==")
     adb, cdp, ev, state = r.adb, r.cdp, r.ev, r.state
+
+    # A standalone `--group C` run starts after a possible pm_clear; the
+    # recents-reopen test reopens the book FILE, which must exist.
+    adb.push_books()
 
     # C1: force_stop_position_restore — AUTO
     def force_stop_position_restore():
@@ -867,7 +1066,7 @@ def group_C(r: Runner) -> None:
     def recents_reopen():
         before = bookmark_count(adb)
         adb.run("shell", "am", "start", "-a", "android.intent.action.VIEW",
-                "-d", f"file:///sdcard/Download/{state.book_on_sd}",
+                "-d", f"{DEVICE_BOOKS_URI}/{state.book_on_sd}",
                 ACTIVITY)
         wait_app_ping(adb, 8)
         page_ready(cdp, timeout=8)

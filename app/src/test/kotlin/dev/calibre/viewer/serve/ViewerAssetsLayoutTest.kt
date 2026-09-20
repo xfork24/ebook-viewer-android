@@ -40,6 +40,39 @@ class ViewerAssetsLayoutTest {
     }
 
     @Test
+    fun `secondary overlays dismiss only when the real backdrop is clicked`() {
+        val js = asset("viewer.js").readText()
+
+        val clickHandler = js.substringAfter(
+            "Overlay.prototype.container_clicked = function container_clicked(evt)",
+        ).substringBefore("Overlay.prototype.show_loading_message")
+        assertTrue(
+            clickHandler.contains("if (evt && evt.target !== self.container)"),
+            "overlay clicks from child content must return before dismissal",
+        )
+        assertFalse(
+            js.contains("evt.target.closest(\"form,table,input"),
+            "dismissal must not depend on an incomplete interactive-element whitelist",
+        )
+
+        for (panel in listOf("GotoOverlay", "SimpleOverlay", "PrefsOverlay", "ReadingStatsOverlay")) {
+            val handler = js.substringAfter(
+                "$panel.prototype.on_container_click = function on_container_click(evt)",
+            ).substringBefore("if (!$panel.prototype.on_container_click.__argnames__)")
+            assertTrue(
+                handler.contains("self.overlay.hide_current_panel();"),
+                "$panel must dismiss after the shared backdrop boundary accepts a click",
+            )
+        }
+
+        val openBookHandler = js.substringAfter(
+            "OpenBook.prototype.on_container_click = function on_container_click(evt)",
+        ).substringBefore("if (!OpenBook.prototype.on_container_click.__argnames__)")
+        assertTrue(openBookHandler.contains("if (!self.closeable)"))
+        assertTrue(openBookHandler.contains("self.overlay.hide_current_panel();"))
+    }
+
+    @Test
     fun `index html preloads viewer js so cold start can fetch in parallel with head parsing`() {
         // The 2.7 MiB viewer.js has to download + parse before the page is
         // interactive; without a preload hint the HTML parser only starts
@@ -56,8 +89,18 @@ class ViewerAssetsLayoutTest {
         assertTrue(headEnd > 0, "index.html must have a </head>")
         val head = html.substring(0, headEnd)
         assertTrue(
-            head.contains("""<link rel="preload" as="script" href="/viewer.js" crossorigin>"""),
+            head.contains("""<link rel="preload" as="script" href="/viewer.js">"""),
             "index.html <head> must preload viewer.js; head was:\n$head",
+        )
+        // The preload must NOT carry crossorigin: the classic <script> below
+        // fetches with same-origin credentials, and an "anonymous" preload
+        // does not match that credentials mode — Chromium then discards the
+        // preload and re-fetches (observed on WebView 113 as "request
+        // credentials mode does not match" plus a double fetch, making the
+        // hint a pure pessimization).
+        assertFalse(
+            head.contains("""href="/viewer.js" crossorigin"""),
+            "preload must not set crossorigin (credentials-mode mismatch)",
         )
         // And the preload must precede the <script src="/viewer.js"> tag.
         val preloadAt = head.indexOf("rel=\"preload\"")

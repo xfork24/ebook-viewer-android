@@ -56,7 +56,7 @@ fun BookmarksPanel(
                     .padding(horizontal = 12.dp.scaled, vertical = 10.dp.scaled),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("书签", fontSize = 18.sp.scaled, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("Bookmarks", fontSize = 18.sp.scaled, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(
                     "✕",
                     fontSize = 18.sp.scaled,
@@ -67,7 +67,7 @@ fun BookmarksPanel(
             }
             if (bookmarks.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("暂无书签,用顶部菜单的 Bookmark this page 添加", color = Color.Black, fontSize = 14.sp.scaled)
+                    Text("No bookmarks yet — add one via Bookmark this page in the top menu", color = Color.Black, fontSize = 14.sp.scaled)
                 }
             } else {
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -81,7 +81,7 @@ fun BookmarksPanel(
                                 .padding(horizontal = 12.dp.scaled, vertical = 8.dp.scaled),
                         ) {
                             Text(
-                                text = record.title.ifEmpty { "(未命名)" },
+                                text = record.title.ifEmpty { "(Untitled)" },
                                 color = if (record.removed) Color.Gray else Color.Black,
                                 fontSize = 15.sp.scaled,
                                 maxLines = 1,

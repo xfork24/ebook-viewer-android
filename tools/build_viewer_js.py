@@ -323,9 +323,12 @@ def main() -> None:
         # Saves ~100-200 ms on cold start (2.7 MiB viewer.js, all of which has
         # to be parsed before the page becomes interactive). The actual
         # <script src="/viewer.js"> tag below remains the executor — preload
-        # is purely a fetch hint. crossorigin mirrors the production resource
-        # delivery (HTTPS via WebViewAssetLoader, same-origin virtual host).
-        '<link rel="preload" as="script" href="/viewer.js" crossorigin>'
+        # is purely a fetch hint. NO crossorigin: a classic <script> without
+        # crossorigin fetches with same-origin credentials, and a preload
+        # with crossorigin (anonymous) does NOT match that credentials mode —
+        # Chromium discards the preload and re-fetches (verified on WebView
+        # 113: "request credentials mode does not match" + double fetch).
+        '<link rel="preload" as="script" href="/viewer.js">'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         '<style>html{font-size:10pt !important}</style>'
         f'<style>{reset}</style><style>{base_css}</style>{eink_motion_css}'
@@ -496,21 +499,31 @@ def main() -> None:
             1,
         )
 
-    # ---- blank-tap closes secondary panels ----
-    # Overlay.container_clicked dispatches to the current panel's
-    # on_container_click when the panel defines one; MainOverlay (the top
-    # menu) doesn't, so blank-area taps fall through to hide_current_panel()
-    # and the menu closes. Upstream defines the secondary panels'
-    # on_container_click as an empty no-op (desktop habit), which swallows
-    # blank taps on touch. Give them the MainOverlay behaviour, but ignore
-    # taps that landed on interactive content — those bubble up from form
-    # controls to the container and must not dismiss. The guard selector
-    # covers every clickable thing these panels render: form controls and
-    # tables (Go to / prefs sub-pages), <a class="calibre-push-button"> push
-    # buttons (create_button), <li> item-list rows (build_list attaches the
-    # row action to the li — prefs categories, open-book recents, profiles),
-    # <option> font-size quick marks (set_quick_size keeps the panel open),
-    # svg bar charts (reading statistics) and the .main-top-bar close row.
+    # ---- blank-tap closes overlays only from the real backdrop ----
+    # Every click inside #book-overlay bubbles through container_clicked.
+    # Restrict dismissal to clicks whose target is the overlay root itself;
+    # whitespace inside a form/card/chart is still panel content and must not
+    # be mistaken for the backdrop. This central boundary also covers panels
+    # without an on_container_click implementation (for example Font size),
+    # instead of relying on an incomplete whitelist of interactive elements.
+    js = patch_literal(
+        js,
+        '        Overlay.prototype.container_clicked = function container_clicked(evt) {\n'
+        '            var self = this;\n'
+        '            if (self.panels.length && typeof (\u03c1\u03c3_expr_temp = self.panels)[\u03c1\u03c3_expr_temp.length-1].on_container_click === "function") {\n',
+        '        Overlay.prototype.container_clicked = function container_clicked(evt) {\n'
+        '            var self = this;\n'
+        '            if (evt && evt.target !== self.container) {\n'
+        '                return;\n'
+        '            }\n'
+        '            if (self.panels.length && typeof (\u03c1\u03c3_expr_temp = self.panels)[\u03c1\u03c3_expr_temp.length-1].on_container_click === "function") {\n',
+        'overlay backdrop click boundary',
+    )
+
+    # Upstream makes these handlers no-ops. Once container_clicked has
+    # established that the click really landed on the backdrop, close the
+    # corresponding secondary panel. OpenBook remains non-closeable on the
+    # no-book home screen, where dismissing it would expose a blank page.
     def blank_tap_close(cls: str, preguard: str = '') -> tuple[str, str]:
         old = (
             f'        {cls}.prototype.on_container_click = function on_container_click(evt) {{\n'
@@ -521,9 +534,6 @@ def main() -> None:
             f'        {cls}.prototype.on_container_click = function on_container_click(evt) {{\n'
             f'            var self = this;\n'
             f'{preguard}'
-            f'            if (evt && evt.target && evt.target.closest && evt.target.closest("form,table,input,select,textarea,button,a,option,li,svg,.main-top-bar,.simple-link")) {{\n'
-            f'                return;\n'
-            f'            }}\n'
             f'            self.overlay.hide_current_panel();\n'
             f'        }};'
         )
@@ -531,16 +541,14 @@ def main() -> None:
 
     for _cls in ('GotoOverlay', 'SimpleOverlay', 'PrefsOverlay', 'ReadingStatsOverlay'):
         _old, _new = blank_tap_close(_cls)
-        if _old in js:
-            js = js.replace(_old, _new, 1)
+        js = patch_literal(js, _old, _new, f'{_cls} backdrop dismissal')
 
     # OpenBook: same blank-tap close, but only when a book is open behind it
     # (closeable=true — the toolbar "Open book" item). On the home page
     # (closeable=false) the panel is the only content; hiding it would leave
     # a blank screen, so keep the upstream no-op there.
     _old, _new = blank_tap_close('OpenBook', preguard='            if (!self.closeable) {\n                return;\n            }\n')
-    if _old in js:
-        js = js.replace(_old, _new, 1)
+    js = patch_literal(js, _old, _new, 'OpenBook backdrop dismissal')
 
     # ---- toolbar layout: flatten the per-group <ul> wrappers ----
     # create_actions groups the buttons into several <ul> chunks (nav,
@@ -853,8 +861,8 @@ def main() -> None:
             '                // The list itself, top-aligned in its (now flex-column) parent.\n'
             '                // flex-grow:0 overrides Go-to\'s inline flex_grow:10 so the list\n'
             '                // shrinks to its content height instead of stretching and pushing\n'
-            '                // itself off-screen. No margin-top/bottom auto: the user wants\n'
-            '                // the entries anchored to the top of the panel, not centered.\n'
+            '                // itself off-screen. No margin-top/bottom auto: the user wants the\n'
+            '                // entries anchored to the top of the panel, not vertically centered.\n'
             '                ".android-aligned-secondary-list{flex-grow:0 !important;}",\n'
             '                // Generic fallback for any leftover viewer.js element.\n'
             '                "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",\n'

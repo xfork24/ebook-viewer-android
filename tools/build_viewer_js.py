@@ -742,6 +742,7 @@ def main() -> None:
         '            c = E.div();\n'
         '            container.appendChild(c);',
         '            self.set_top_title(self.main_title);\n'
+        '            ρσ_interpolate_kwargs.call(this, set_css, [container].concat([ρσ_desugar_kwargs({display: "flex", flex_direction: "column"})]));\n'
         '            c = E.div();\n'
         '            c.classList.add("android-aligned-secondary-list");\n'
         '            container.appendChild(c);',
@@ -819,6 +820,12 @@ def main() -> None:
             '                // value is the reader\'s visibility state machine.\n'
             '                ".android-aligned-secondary-list .item-first-row{align-items:center !important;}",\n'
             '                ".android-aligned-secondary-list .item-subtitle{padding-top:0 !important;}",\n'
+            '                // The list itself, vertically centered in its (now flex-column)\n'
+            '                // parent — margin-top/bottom auto squeezes it into the middle of\n'
+            '                // the available height, and flex-grow:0 overrides Go-to\'s inline\n'
+            '                // flex_grow:10 so the list shrinks to its content height instead\n'
+            '                // of stretching and absorbing the centering margin.\n'
+            '                ".android-aligned-secondary-list{flex-grow:0 !important;margin-top:auto !important;margin-bottom:auto !important;}",\n'
             '                // Generic fallback for any leftover viewer.js element.\n'
             '                "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",\n'
             '                // Universal bump: every non-input, non-script element inside\n'

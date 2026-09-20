@@ -78,4 +78,22 @@ class SecondaryPanelCenteringTest {
             "viewer.js must not force #book-overlay to display:flex — its block/none toggles visibility",
         )
     }
+
+    @Test
+    fun `prefs main IIFE declares set_css from rho modules dom (regression guard for uncaught reference error)`() {
+        // Prefs.prototype.display_top calls `set_css` unqualified; the
+        // read_book.prefs.main RapydScript IIFE must declare it at module
+        // scope just like every other IIFE that calls set_css. Without this
+        // declaration, opening Preferences throws
+        // `ReferenceError: set_css is not defined` and the secondary panel
+        // never renders.
+        val prefsIife = viewerJs.substringAfter(
+            "var __name__ = \"read_book.prefs.main\";",
+        )
+        val head = prefsIife.substring(0, minOf(prefsIife.length, 2_500))
+        assertTrue(
+            "var set_css = ρσ_modules.dom.set_css;" in head,
+            "read_book.prefs.main IIFE must declare `var set_css = ρσ_modules.dom.set_css;` so Prefs.prototype.display_top can call it; got:\n$head",
+        )
+    }
 }

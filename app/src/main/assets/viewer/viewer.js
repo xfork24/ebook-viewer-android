@@ -40269,6 +40269,7 @@ return this.__repr__();
 
         var clear = ρσ_modules.dom.clear;
         var ensure_id = ρσ_modules.dom.ensure_id;
+        var set_css = ρσ_modules.dom.set_css;
 
         var runtime = ρσ_modules["read_book.globals"].runtime;
 

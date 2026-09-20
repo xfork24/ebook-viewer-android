@@ -749,6 +749,28 @@ def main() -> None:
         'Preferences secondary-list hooks',
     )
 
+    # ---- Declare set_css in the read_book.prefs.main IIFE ----
+    # The Preferences secondary-list hook (above) calls `set_css` unqualified,
+    # but the module-scope declarations of this RapydScript IIFE only import
+    # `clear` and `ensure_id` from ρσ_modules.dom — `set_css` was missing.
+    # Without this declaration, clicking Preferences throws
+    # `ReferenceError: set_css is not defined` inside Prefs.prototype.display_top.
+    # Every other RapydScript module that calls set_css has its own
+    # `var set_css = ρσ_modules.dom.set_css;` at the top; we mirror that.
+    js = patch_literal(
+        js,
+        '        var clear = ρσ_modules.dom.clear;\n'
+        '        var ensure_id = ρσ_modules.dom.ensure_id;\n'
+        '\n'
+        '        var runtime = ρσ_modules["read_book.globals"].runtime;',
+        '        var clear = ρσ_modules.dom.clear;\n'
+        '        var ensure_id = ρσ_modules.dom.ensure_id;\n'
+        '        var set_css = ρσ_modules.dom.set_css;\n'
+        '\n'
+        '        var runtime = ρσ_modules["read_book.globals"].runtime;',
+        'prefs.main IIFE — declare set_css',
+    )
+
     # ---- global JS-side UI scale: 1.5× everything that viewer.js renders ----
     # Native Compose panels are already scaled via UiScale.kt; this matches
     # that for the toolbar overlay, prefs panel, search/lookup widgets,

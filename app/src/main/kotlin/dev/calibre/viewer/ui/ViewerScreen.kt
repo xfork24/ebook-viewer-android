@@ -24,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
@@ -53,52 +54,66 @@ fun ViewerScreen(
     onProfileDraftChange: (String) -> Unit = {},
     onDismissPanels: () -> Unit = {},
 ) {
-    if (state.tocVisible) {
-        TocPanel(
-            rows = state.tocRows,
-            viewedNodes = state.viewedTocNodes,
-            onNodeClick = onTocNodeClick,
-            onDismiss = onDismissToc,
-        )
+    // key(visible) gives each panel an explicit composition identity tied to
+    // its visibility: a reopen (false → true) composes a fresh subtree with
+    // reset internal remember state — the panels' designed lifecycle — and
+    // keeps the five call sites independent if they ever share a when().
+    key(state.tocVisible) {
+        if (state.tocVisible) {
+            TocPanel(
+                rows = state.tocRows,
+                viewedNodes = state.viewedTocNodes,
+                onNodeClick = onTocNodeClick,
+                onDismiss = onDismissToc,
+            )
+        }
     }
-    if (state.searchVisible) {
-        SearchPanel(
-            prefill = state.searchPrefill,
-            results = state.searchResults,
-            searching = state.searching,
-            searchError = state.searchError,
-            currentResultNum = state.currentResultNum,
-            onSearch = onSearch,
-            onStep = onSearchStep,
-            onResultClick = onSearchResultClick,
-            onDismiss = onDismissSearch,
-        )
+    key(state.searchVisible) {
+        if (state.searchVisible) {
+            SearchPanel(
+                prefill = state.searchPrefill,
+                results = state.searchResults,
+                searching = state.searching,
+                searchError = state.searchError,
+                currentResultNum = state.currentResultNum,
+                onSearch = onSearch,
+                onStep = onSearchStep,
+                onResultClick = onSearchResultClick,
+                onDismiss = onDismissSearch,
+            )
+        }
     }
-    if (state.bookmarksVisible) {
-        BookmarksPanel(
-            bookmarks = state.bookmarks,
-            onBookmarkClick = onBookmarkClick,
-            onDismiss = onDismissPanels,
-        )
+    key(state.bookmarksVisible) {
+        if (state.bookmarksVisible) {
+            BookmarksPanel(
+                bookmarks = state.bookmarks,
+                onBookmarkClick = onBookmarkClick,
+                onDismiss = onDismissPanels,
+            )
+        }
     }
-    if (state.highlightsVisible) {
-        HighlightsPanel(
-            highlights = state.highlights,
-            onHighlightClick = onHighlightClick,
-            onDismiss = onDismissPanels,
-        )
+    key(state.highlightsVisible) {
+        if (state.highlightsVisible) {
+            HighlightsPanel(
+                highlights = state.highlights,
+                onHighlightClick = onHighlightClick,
+                onDismiss = onDismissPanels,
+            )
+        }
     }
-    if (state.profilesVisible) {
-        ProfilesPanel(
-            profiles = state.profiles,
-            draftName = state.profileDraftName,
-            onDraftNameChange = onProfileDraftChange,
-            onSave = onSaveProfile,
-            onApply = onApplyProfile,
-            onDelete = onDeleteProfile,
-            onResetDefaults = onResetProfileDefaults,
-            onDismiss = onDismissPanels,
-        )
+    key(state.profilesVisible) {
+        if (state.profilesVisible) {
+            ProfilesPanel(
+                profiles = state.profiles,
+                draftName = state.profileDraftName,
+                onDraftNameChange = onProfileDraftChange,
+                onSave = onSaveProfile,
+                onApply = onApplyProfile,
+                onDelete = onDeleteProfile,
+                onResetDefaults = onResetProfileDefaults,
+                onDismiss = onDismissPanels,
+            )
+        }
     }
     if (state.preparing) {
         OverlayLabel(AnnotatedString("正在准备书籍…"))

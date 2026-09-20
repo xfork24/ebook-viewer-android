@@ -14,9 +14,11 @@ sealed interface ServeResult {
 
     /**
      * 200 with a body streamed straight off disk — book files never land in
-     * memory as a whole (a chunky image-rich EPUB chapter can be tens of
-     * MB). Chromium reads and closes the stream itself; the host side must
-     * NEVER close it or wrap it in use{}.
+     * memory as a whole (a chunky image-rich EPUB chapter can be tens of MB).
+     * Chromium reads and closes the stream itself. The only host-side close
+     * is BookServer's bounded reclaim (setBook/closeAllStreams over
+     * CloseOnceInputStream wrappers): it aborts at most a fetch on a page
+     * being replaced — noise, never an error path.
      */
     class OkStream(val mime: String, val data: java.io.InputStream) : ServeResult
 

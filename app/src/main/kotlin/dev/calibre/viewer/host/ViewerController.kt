@@ -232,7 +232,7 @@ class ViewerController(
                     bookOpener.open(staged, force = force, originKey = originKey)
                 }
                 current = opened
-                val viewerBook = ViewerBook.open(opened.bookDir, opened.sourceFile.path)
+                val viewerBook = ViewerBook.open(opened.bookDir, opened.sourceFile.path, onWarn = log)
                     ?: throw IOException("Rendered book is incomplete: ${opened.bookDir}")
                 bookServer.setBook(viewerBook)
                 // The native TOC panel and the search core are fed from the

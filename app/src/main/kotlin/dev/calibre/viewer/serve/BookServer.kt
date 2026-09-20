@@ -30,9 +30,36 @@ class BookServer(
     @Volatile
     private var book: ViewerBook? = null
 
-    /** Install the currently-open book; null = home page, no book files. */
+    /**
+     * Streams handed to Chromium and not yet closed by it. Cancelled
+     * requests (renderer death mid-read, page replaced mid-fetch) never get
+     * closed by the browser side, so without a reclaim the fd leak is
+     * unbounded over a long reading session; [setBook] bounds it at one
+     * book's lifetime of undelivered files.
+     */
+    private val openStreams = java.util.Collections.synchronizedSet(HashSet<CloseOnceInputStream>())
+
+    /**
+     * Install the currently-open book; null = home page, no book files.
+     * Also closes every stream the previous book's page never drained —
+     * that page is going away, so its undelivered files are dead weight.
+     * Closing can race an in-flight Chromium read of the outgoing page;
+     * that aborts one fetch (console noise at worst) and must never become
+     * an error path here.
+     */
     fun setBook(book: ViewerBook?) {
+        closeAllStreams()
         this.book = book
+    }
+
+    /** Close every tracked stream (idempotent per stream). */
+    fun closeAllStreams() {
+        val drained: List<CloseOnceInputStream> = synchronized(openStreams) {
+            val pending = openStreams.toList()
+            openStreams.clear()
+            pending
+        }
+        for (stream in drained) stream.close()
     }
 
     val currentBook: ViewerBook? get() = book
@@ -72,8 +99,12 @@ class BookServer(
             val b = book ?: return ServeResult.Fail(404, "No book open for /$name")
             val file = b.getData(bookName) ?: return ServeResult.Fail(404, "Not found /$name")
             // Streamed, not buffered: big image-rich chapters never occupy
-            // host memory as a whole. Chromium owns (and closes) the stream.
-            return ServeResult.OkStream(file.mime, file.stream)
+            // host memory as a whole. Chromium closes the stream when it
+            // drains it; the CloseOnce wrapper lets setBook reclaim the ones
+            // it never does (idempotently, even if both close).
+            val tracked = CloseOnceInputStream(file.stream, onClose = { openStreams.remove(it) })
+            openStreams.add(tracked)
+            return ServeResult.OkStream(file.mime, tracked)
         }
         if (name == "manifest") {
             // b'[' + manifest + b',' + metadata + b']' — with no book this is

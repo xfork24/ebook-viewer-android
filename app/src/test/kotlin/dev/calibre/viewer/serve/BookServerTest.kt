@@ -9,6 +9,8 @@ package dev.calibre.viewer.serve
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
@@ -21,6 +23,17 @@ class BookServerTest {
         override fun read(assetPath: String): ByteArray? = files[assetPath]
     }
 
+    /** A rendered-book dir fixture: manifest + metadata + two book files. */
+    private fun newBookDir(prefix: String = "serve-test-book"): File {
+        val bookDir = createTempDir(prefix = prefix)
+        Runtime.getRuntime().addShutdownHook(Thread { bookDir.deleteRecursively() })
+        File(bookDir, "calibre-book-manifest.json").writeText("""{"version":1,"spine":["ch1.html"]}""")
+        File(bookDir, "calibre-book-metadata.json").writeText("""{"title":"T"}""")
+        File(bookDir, "ch1.html").writeText("""{"version":1,"tree":{}}""")
+        File(bookDir, "style.css").writeText("body{}")
+        return bookDir
+    }
+
     private fun serverWithBook(
         assets: Map<String, ByteArray> = mapOf(
             "index.html" to "<html>index</html>".toByteArray(),
@@ -28,13 +41,7 @@ class BookServerTest {
             "viewer.js.map" to "{}".toByteArray(),
         ),
     ): BookServer {
-        val bookDir = createTempDir(prefix = "serve-test-book")
-        Runtime.getRuntime().addShutdownHook(Thread { bookDir.deleteRecursively() })
-        File(bookDir, "calibre-book-manifest.json").writeText("""{"version":1,"spine":["ch1.html"]}""")
-        File(bookDir, "calibre-book-metadata.json").writeText("""{"title":"T"}""")
-        File(bookDir, "ch1.html").writeText("""{"version":1,"tree":{}}""")
-        File(bookDir, "style.css").writeText("body{}")
-        val book = ViewerBook.open(bookDir, "/books/x.epub")
+        val book = ViewerBook.open(newBookDir(), "/books/x.epub")
         assertNotNull(book)
         val configDir = createTempDir(prefix = "serve-test-config")
         Runtime.getRuntime().addShutdownHook(Thread { configDir.deleteRecursively() })
@@ -79,8 +86,10 @@ class BookServerTest {
         // the viewer reads XHR responseText regardless of mime.
         val html = s.get("/book/ch1.html")
         assertTrue(html is ServeResult.OkStream && html.mime == "text/html")
+        (html as ServeResult.OkStream).data.close()
         val css = s.get("/book/style.css")
         assertTrue(css is ServeResult.OkStream && css.mime == "text/css; charset=utf-8")
+        (css as ServeResult.OkStream).data.close()
     }
 
     @Test
@@ -92,6 +101,47 @@ class BookServerTest {
         // close it ourselves after draining.
         r.data.use { stream ->
             assertEquals("body{}", stream.readBytes().toString(Charsets.UTF_8))
+        }
+    }
+
+    @Test
+    fun `book streams close idempotently and reject reads after close`() {
+        val s = serverWithBook()
+        val r = s.get("/book/style.css")
+        assertTrue(r is ServeResult.OkStream)
+        val stream = (r as ServeResult.OkStream).data as CloseOnceInputStream
+        assertFalse(stream.isClosed)
+        stream.close()
+        assertTrue(stream.isClosed)
+        // A second close (Chromium drained it after our reclaim, or vice
+        // versa) must be a no-op, not a second fd free.
+        stream.close()
+        assertTrue(stream.isClosed)
+        assertFailsWith<java.io.IOException> { stream.read() }
+    }
+
+    @Test
+    fun `setBook reclaims streams the previous page never drained`() {
+        val s = serverWithBook()
+        val r = s.get("/book/style.css")
+        val stream = (r as ServeResult.OkStream).data as CloseOnceInputStream
+        assertFalse(stream.isClosed)
+
+        // Book switch: everything the old page never drained is closed, so
+        // the fd ceiling is one book's lifetime, not the process's.
+        s.setBook(null)
+
+        assertTrue(stream.isClosed)
+        assertFailsWith<java.io.IOException> { stream.read() }
+
+        // The tracker recovered: a fresh book serves fresh, readable streams.
+        val book2 = ViewerBook.open(newBookDir("serve-test-book2"), "/books/y.epub")
+        assertNotNull(book2)
+        s.setBook(book2)
+        val r2 = s.get("/book/ch1.html")
+        assertTrue(r2 is ServeResult.OkStream)
+        (r2 as ServeResult.OkStream).data.use {
+            assertEquals("""{"version":1,"tree":{}}""", it.readBytes().toString(Charsets.UTF_8))
         }
     }
 
@@ -126,7 +176,9 @@ class BookServerTest {
     @Test
     fun `sandbox host only allows book and mathjax prefixes`() {
         val s = serverWithBook()
-        assertTrue(s.get("/book/ch1.html", host = BookServer.SANDBOX_HOST) is ServeResult.OkStream)
+        val r = s.get("/book/ch1.html", host = BookServer.SANDBOX_HOST)
+        assertTrue(r is ServeResult.OkStream)
+        (r as ServeResult.OkStream).data.close()
         assertTrue(s.get("/manifest", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)
         assertTrue(s.get("/", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)
         assertTrue(s.get("/viewer.js", host = BookServer.SANDBOX_HOST) is ServeResult.Fail)
@@ -257,5 +309,23 @@ class BookServerTest {
         val empty = createTempDir(prefix = "serve-empty")
         Runtime.getRuntime().addShutdownHook(Thread { empty.deleteRecursively() })
         assertEquals(null, ViewerBook.open(empty, "x.epub"))
+    }
+
+    @Test
+    fun `open fails loud when rendered metadata is missing or empty`() {
+        // A broken render without metadata would otherwise serve an invalid
+        // `[<manifest>,]` /manifest (trailing comma) and the viewer would
+        // die on JSON.parse with a cryptic error. Fail at open instead.
+        val warns = mutableListOf<String>()
+
+        val noMeta = newBookDir("serve-nometa")
+        File(noMeta, "calibre-book-metadata.json").delete()
+        assertEquals(null, ViewerBook.open(noMeta, "x.epub", onWarn = { warns.add(it) }))
+
+        val emptyMeta = newBookDir("serve-emptymeta")
+        File(emptyMeta, "calibre-book-metadata.json").writeText("")
+        assertEquals(null, ViewerBook.open(emptyMeta, "x.epub", onWarn = { warns.add(it) }))
+
+        assertEquals(2, warns.size, warns.toString())
     }
 }

@@ -27,19 +27,31 @@ class ViewerBook private constructor(
         /**
          * Read the rendered tree's manifest + metadata. Returns null when the
          * manifest is missing — the caller treats that as "no book open yet".
+         * Unreadable/empty metadata also returns null (with [onWarn]): the
+         * render pipeline always writes a non-empty metadata JSON, so its
+         * absence means a broken render — serving on would concatenate a
+         * `[<manifest>,]` trailing comma into /manifest and the viewer would
+         * fail to JSON.parse it with a cryptic load error instead of the
+         * host's friendly one.
          */
-        fun open(bookDir: File, pathtoebook: String): ViewerBook? {
+        fun open(bookDir: File, pathtoebook: String, onWarn: (String) -> Unit = {}): ViewerBook? {
             val manifest = File(bookDir, MANIFEST_NAME)
             if (!manifest.isFile) return null
             val manifestBytes = try {
                 manifest.readBytes()
             } catch (e: IOException) {
+                onWarn("manifest unreadable in $bookDir: $e")
                 return null
             }
             val metadataBytes = try {
                 File(bookDir, METADATA_NAME).readBytes()
             } catch (e: IOException) {
-                ByteArray(0)
+                onWarn("metadata unreadable in $bookDir: $e")
+                return null
+            }
+            if (metadataBytes.isEmpty()) {
+                onWarn("metadata empty in $bookDir")
+                return null
             }
             return ViewerBook(
                 bookDir = bookDir,

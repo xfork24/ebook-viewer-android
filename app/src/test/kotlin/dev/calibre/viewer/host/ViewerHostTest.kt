@@ -378,6 +378,34 @@ class ViewerHostTest {
     }
 
     @Test
+    fun `render process death reclaims streams the dead page abandoned`() {
+        val root = tempRoot()
+        val js = FakeJs()
+        val controller = newController(root, js, FakeHostUi())
+        bringBridgeUp(controller, js)
+        openAndDisplay(controller, js) { minimalEpub("v1") }
+
+        // A fetch the browser side never drained (the renderer died mid-read).
+        val r = controller.bookServer.handle(
+            "GET", "https", BookServer.FAKE_HOST, "/book/ch1.html",
+        )
+        assertTrue(r is ServeResult.OkStream, "book file must stream: $r")
+        val stream = (r as ServeResult.OkStream).data as dev.calibre.viewer.serve.CloseOnceInputStream
+        assertFalse(stream.isClosed)
+
+        controller.onRenderProcessGone()
+
+        assertTrue(stream.isClosed, "render-gone must reclaim abandoned streams")
+        // The rebuilt page re-fetches through fresh streams — the book stays
+        // servable.
+        val r2 = controller.bookServer.handle(
+            "GET", "https", BookServer.FAKE_HOST, "/book/ch1.html",
+        )
+        assertTrue(r2 is ServeResult.OkStream)
+        (r2 as ServeResult.OkStream).data.close()
+    }
+
+    @Test
     fun `reload during an open window is dropped without evicting the served book`() {
         val root = tempRoot()
         val js = FakeJs()

@@ -207,18 +207,31 @@ class MainActivity : ComponentActivity(), HostUi {
         // WebPage.__init__ parity: the persisted font sizes must be on the
         // engine before the deferred initial load renders any book text.
         controller.applyPersistedFontSettings()
-        newHost.startPolling()
+        if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            newHost.startPolling()
+        } else {
+            // The renderer died while we were paused (a frozen WebView keeps
+            // its process). Match the fresh host to the suspended state —
+            // its timers are process-wide paused anyway; starting the
+            // watchdog now would only queue dead polls. onResume's
+            // resumeFromBackground + startPolling drives it.
+            newHost.suspendForBackground()
+        }
     }
 
     /** WebView renderer died: stop using it, then rebuild the whole stack. */
     private fun onRenderProcessGone() {
         Log.e(TAG, "WebView render process gone; rebuilding host")
         host?.stopPolling()
+        // The dead WebView must be unusable immediately: onPause/applyFont-
+        // Settings would otherwise touch a renderless view until the next
+        // composition runs rebuildHost.
+        host = null
         controller.onRenderProcessGone()
         rebuildCounter.intValue++
-        // The key() change disposes the old AndroidView node; the next
-        // factory pass tears the old host down and attachBridge re-sends
-        // the current book to the fresh page.
+        // The rebuildCounter change recomposes and runs rebuildHost, which
+        // tears the old host down and attachBridge re-sends the current book
+        // to the fresh page.
     }
 
     private fun destroyWebView(webView: android.webkit.WebView) {
@@ -338,6 +351,13 @@ class MainActivity : ComponentActivity(), HostUi {
     }
 
     private fun handleBack(): Boolean {
+        // The error overlay is the topmost layer: back dismisses it (back
+        // to reading, or back to the home page after a failed first open)
+        // instead of exiting the app under the user's thumb.
+        if (controller.state.value.errorMessage != null) {
+            controller.dismissError()
+            return true
+        }
         // Panels close first, like dialogs over the reader.
         if (controller.state.value.tocVisible) {
             controller.dismissToc()
@@ -397,10 +417,10 @@ class MainActivity : ComponentActivity(), HostUi {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // UI_HIDDEN (the app moved fully to the background) is the only
-        // level where dropping the asset LRU pays off — at harsher levels
-        // the process is about to die anyway, and the WebView's own memory
-        // dwarfs anything we control here.
+        // UI_HIDDEN and every harsher level mean the app is no longer
+        // visible — the only state where dropping the asset LRU pays off.
+        // The RUNNING_* levels arrive while the reader is on screen, and the
+        // WebView's own memory dwarfs anything we control here.
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && ::assetSource.isInitialized) {
             assetSource.clearCache()
         }
@@ -412,6 +432,10 @@ class MainActivity : ComponentActivity(), HostUi {
             old.stopPolling()
             destroyWebView(old.webView)
         }
+        // Best-effort close of anything the browser side never drained; the
+        // process is going away, so fds would be reclaimed regardless — this
+        // just keeps fd counts honest for as long as we do linger.
+        controller.bookServer.closeAllStreams()
         super.onDestroy()
     }
 

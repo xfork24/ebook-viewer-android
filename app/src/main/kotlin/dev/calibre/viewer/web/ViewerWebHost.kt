@@ -84,7 +84,11 @@ class ViewerWebHost(
         webView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
                 if (webView.isAttachedToWindow && webView.width > 0 && webView.height > 0) {
-                    webView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    // After a merge the observer can be dead; removing from a
+                    // dead one would throw. The listener never fires again in
+                    // that case, so skipping the removal is harmless too.
+                    val vto = webView.viewTreeObserver
+                    if (vto.isAlive) vto.removeOnGlobalLayoutListener(this)
                     if (webView.url == null) webView.loadUrl(url)
                 }
             }

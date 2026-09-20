@@ -325,10 +325,12 @@ class ViewerController(
     fun onRenderProcessGone() {
         awaitingBookDisplay = false
         // Everything queued against the dead page is orphaned: stop streaming
-        // search results into it and drop get_current_cfi requests whose
-        // replies died with the renderer.
+        // search results into it, drop get_current_cfi requests whose replies
+        // died with the renderer, and reclaim book streams it never drained
+        // (they would otherwise sit open until the next setBook).
         searchJob?.cancel()
         pendingCfiRequests.clear()
+        bookServer.closeAllStreams()
         // An in-flight open is left to land: its send to the dead bridge is
         // inert, and attachBridge re-sends `current` to the rebuilt page.
         // Clearing preparing underneath it would reopen the double-open

@@ -42,6 +42,7 @@ import dev.calibre.viewer.host.FontSettings
 import dev.calibre.viewer.host.HostUi
 import dev.calibre.viewer.host.StandardFontFamily
 import dev.calibre.viewer.host.SystemFontFamilies
+import dev.calibre.viewer.host.prefersGetContentPicker
 import dev.calibre.viewer.host.UiData
 import dev.calibre.viewer.host.ViewerController
 import dev.calibre.viewer.ui.NoIndication
@@ -88,11 +89,19 @@ class MainActivity : ComponentActivity(), HostUi {
 
     /**
      * Styles "Change image": OpenDocument (ACTION_OPEN_DOCUMENT) always
-     * routes to DocumentsUI — the system file manager — unlike GetContent,
-     * which may resolve to the photo picker.
+     * routes to DocumentsUI — the system file manager — and stays the
+     * default. E-ink vendor ROMs whose pickers open but never finish with a
+     * result (iReader SmartOS among them) route to GetContent instead; see
+     * [pickBackgroundImage] and VendorPickers.
      */
-    private val pickBackgroundImage =
+    private val pickBackgroundImageDoc =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) handleBackgroundImagePicked(uri)
+        }
+
+    /** Vendor-escape contract for the same flow; both feed one handler. */
+    private val pickBackgroundImageContent =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             if (uri != null) handleBackgroundImagePicked(uri)
         }
 
@@ -524,7 +533,21 @@ class MainActivity : ComponentActivity(), HostUi {
     }
 
     override fun pickBackgroundImage() {
-        pickBackgroundImage.launch(arrayOf("image/*"))
+        if (prefersGetContentPicker(
+                android.os.Build.MANUFACTURER, android.os.Build.BRAND, android.os.Build.MODEL,
+            )
+        ) {
+            pickBackgroundImageContent.launch("image/*")
+            return
+        }
+        try {
+            pickBackgroundImageDoc.launch(arrayOf("image/*"))
+        } catch (e: android.content.ActivityNotFoundException) {
+            // ROM with no OPEN_DOCUMENT handler at all: fall back to the
+            // older, universally implemented contract.
+            Log.w(TAG, "no OPEN_DOCUMENT handler; falling back to GetContent", e)
+            pickBackgroundImageContent.launch("image/*")
+        }
     }
 
     /**

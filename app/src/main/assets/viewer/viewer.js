@@ -35396,6 +35396,21 @@ return this.__repr__();
                 // itself off-screen. No margin-top/bottom auto: the user wants the
                 // entries anchored to the top of the panel, not vertically centered.
                 ".android-aligned-secondary-list{flex-grow:0 !important;}",
+                // ---- e-ink flat chrome ----
+                // No shadows anywhere in the overlay UI: the top-bar
+                // hairline, the secondary-list row cards, hover lifts
+                // and focus rings are each an extra rasterization pass
+                // that renders as a gray smear on an e-ink panel.
+                "#book-overlay *,.modal-container *,.read-book-overlay *{box-shadow:none !important;text-shadow:none !important;}",
+                // Buttons and rows: flat black-and-white. Kill the
+                // translucent hover/active tints and lift transforms —
+                // sticky :hover on touch otherwise leaves a gray wash
+                // on every tapped control. Anchors flatten to their
+                // plain transparent state; rows/selects keep their
+                // plain window background so no see-through gaps open.
+                "#book-overlay a.calibre-push-button:hover,#book-overlay a.calibre-push-button:active,#book-overlay a.calibre-icon-button:hover,#book-overlay a.calibre-icon-button:active,#book-overlay .main-top-bar a:hover,#book-overlay .main-top-bar a:active{background-color:transparent !important;background-image:none !important;transform:none !important;}",
+                "#book-overlay .generic-items-list li:hover{background-color:var(--calibre-color-window-background) !important;transform:none !important;}",
+                "#book-overlay div[data-component=select]>select:hover{background-color:var(--calibre-color-window-background) !important;}",
                 // Generic fallback for any leftover viewer.js element.
                 "body .read-book-overlay,body .read-book-overlay *{font-size:inherit;}",
                 // Universal bump: every non-input, non-script element inside

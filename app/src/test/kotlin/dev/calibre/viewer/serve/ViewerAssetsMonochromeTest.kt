@@ -83,4 +83,21 @@ class ViewerAssetsMonochromeTest {
         // The one hardcoded stroke color in the merged sprite inherits instead.
         assertFalse(html.contains("stroke:#30a82d"), "green icon stroke still present")
     }
+
+    @Test
+    fun `overlay chrome is flat and shadow free for e ink`() {
+        val js = asset("viewer.js").readText()
+        // No shadows anywhere in the overlay UI (top bar, row cards, hover
+        // lifts, focus rings) — each is a rasterization pass e-ink pays for.
+        assertTrue(js.contains(
+            "#book-overlay *,.modal-container *,.read-book-overlay *" +
+                "{box-shadow:none !important;text-shadow:none !important;}",
+        ), "shadow kill rule missing")
+        // Buttons/rows flatten on hover/active: no translucent tints, no
+        // gradients, no lift transforms (sticky touch :hover would otherwise
+        // leave a gray wash on every tapped control).
+        assertTrue(js.contains(
+            "#book-overlay a.calibre-push-button:hover",
+        ), "button hover flatten rule missing")
+    }
 }

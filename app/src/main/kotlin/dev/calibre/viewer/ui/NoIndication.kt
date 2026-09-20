@@ -13,12 +13,17 @@ import androidx.compose.ui.Modifier
 
 object NoIndication : IndicationNodeFactory {
 
-    // An empty node: no attach work, no observation, nothing to invalidate.
+    // A fresh empty node per create() call — no attach work, no observation,
+    // nothing to invalidate. NEVER share one node instance across clickables:
+    // each clickable delegates the returned node into its own node tree, and
+    // a shared instance gets delegated twice when a lazy list recycles rows
+    // mid-gesture ("Cannot delegate to an already delegated node" crash on
+    // fast TOC fling).
     override fun create(interactionSource: InteractionSource): Modifier.Node =
-        NoIndicationNode
+        NoIndicationNode()
 
     override fun equals(other: Any?): Boolean = other === NoIndication
     override fun hashCode(): Int = System.identityHashCode(this)
 
-    private object NoIndicationNode : Modifier.Node()
+    private class NoIndicationNode : Modifier.Node()
 }

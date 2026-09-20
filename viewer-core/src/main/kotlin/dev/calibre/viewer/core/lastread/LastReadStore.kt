@@ -7,13 +7,15 @@
 
 package dev.calibre.viewer.core.lastread
 
+import dev.calibre.viewer.core.internal.atomicWriteText
+import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.double
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 class LastReadStore(file: File) {
 
@@ -29,10 +31,11 @@ class LastReadStore(file: File) {
 
     @Synchronized fun get(bookHash: String): LastReadPosition? {
         val obj = entries[bookHash] ?: return null
-        val cfi = obj["cfi"]?.jsonPrimitive?.content ?: return null
-        val frac = obj["pos_frac"]?.jsonPrimitive?.double ?: 0.0
-        val path = obj["pathtoebook"]?.jsonPrimitive?.content
-        return LastReadPosition(cfi, frac, path)
+        val cfi = obj["cfi"] as? JsonPrimitive ?: return null
+        if (cfi is JsonNull) return null
+        val frac = obj["pos_frac"]?.let { (it as? JsonPrimitive)?.doubleOrNull } ?: 0.0
+        val path = (obj["pathtoebook"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+        return LastReadPosition(cfi.content, frac, path)
     }
 
     @Synchronized fun update(bookHash: String, cfi: String, posFrac: Double, pathtoebook: String? = null) {
@@ -41,7 +44,7 @@ class LastReadStore(file: File) {
             mapOf(
                 "cfi" to JsonPrimitive(cfi),
                 "pos_frac" to JsonPrimitive(posFrac),
-                "pathtoebook" to (pathtoebook?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull),
+                "pathtoebook" to (pathtoebook?.let { JsonPrimitive(it) } ?: JsonNull),
             )
         )
         persist()
@@ -62,20 +65,38 @@ class LastReadStore(file: File) {
         val text = try {
             storeFile.readText(Charsets.UTF_8)
         } catch (e: Exception) {
+            quarantineCorrupt(storeFile)
             return LinkedHashMap()
         }
-        if (text.isBlank()) return LinkedHashMap()
+        if (text.isBlank()) {
+            quarantineCorrupt(storeFile)
+            return LinkedHashMap()
+        }
         return try {
             val obj = json.parseToJsonElement(text).jsonObject
-            obj.entries.filter { it.value is JsonObject }
+            obj.entries.filter { (_, v) -> v is JsonObject && entryIsValid(v) }
                 .associate { it.key to it.value as JsonObject }.toMutableMap()
         } catch (e: Exception) {
+            quarantineCorrupt(storeFile)
             LinkedHashMap()
         }
     }
 
+    /**
+     * A single malformed entry (schema drift, hand edit) must not crash
+     * openBook: cfi must be a string primitive, pos_frac — when present —
+     * a number. Malformed entries are dropped at load; valid ones survive.
+     */
+    private fun entryIsValid(v: JsonObject): Boolean {
+        val cfi = v["cfi"] as? JsonPrimitive ?: return false
+        if (cfi is JsonNull) return false
+        val frac = v["pos_frac"] ?: return true
+        if (frac !is JsonPrimitive || frac is JsonNull) return false
+        return frac.doubleOrNull != null
+    }
+
     @Synchronized private fun persist() {
         storeFile.parentFile?.mkdirs()
-        storeFile.writeText(Json.encodeToString(JsonObject.serializer(), JsonObject(entries.toMap())))
+        atomicWriteText(storeFile, Json.encodeToString(JsonObject.serializer(), JsonObject(entries.toMap())))
     }
 }

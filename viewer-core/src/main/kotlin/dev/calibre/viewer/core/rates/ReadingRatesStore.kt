@@ -15,6 +15,8 @@
 
 package dev.calibre.viewer.core.rates
 
+import dev.calibre.viewer.core.internal.atomicWriteText
+import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
@@ -86,7 +88,7 @@ class ReadingRatesStore(file: File) {
     private fun write(text: String) {
         try {
             storeFile.parentFile?.mkdirs()
-            storeFile.writeText(text)
+            atomicWriteText(storeFile, text)
         } catch (e: Exception) {
             // A failed rates write must never take the reader down; the next
             // update retries and the worst case is re-measuring the rates.
@@ -99,15 +101,21 @@ class ReadingRatesStore(file: File) {
         val text = try {
             storeFile.readText(Charsets.UTF_8)
         } catch (e: Exception) {
+            quarantineCorrupt(storeFile)
             return LinkedHashMap()
         }
-        if (text.isBlank()) return LinkedHashMap()
+        if (text.isBlank()) {
+            quarantineCorrupt(storeFile)
+            return LinkedHashMap()
+        }
         return try {
             val obj = json.parseToJsonElement(text).jsonObject
             obj.entries.filter { it.value is JsonObject }
                 .associate { it.key to it.value as JsonObject }.toMutableMap()
         } catch (e: Exception) {
-            // Corrupt store: start fresh (rates re-measure after 5 page turns).
+            // Corrupt store: quarantine and start fresh (rates re-measure
+            // after 5 page turns).
+            quarantineCorrupt(storeFile)
             LinkedHashMap()
         }
     }

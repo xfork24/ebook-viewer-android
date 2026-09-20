@@ -70,6 +70,49 @@ class StoresTest {
     }
 
     @Test
+    fun `corrupt session file is quarantined not overwritten`() {
+        val dir = freshDir()
+        val sessionDir = File(dir, "session").apply { mkdirs() }
+        val file = File(sessionDir, "session_data.json").apply { writeText("{half-written") }
+        val s = SessionStore(sessionDir)
+        assertTrue(s.sessionDataJson.jsonObject.isEmpty())
+        // The damaged original survives as .corrupt instead of being wiped;
+        // a later save writes a fresh target while the quarantine is kept.
+        val quarantined = File(sessionDir, "session_data.json.corrupt")
+        assertTrue(quarantined.isFile, "damaged file must be quarantined")
+        assertEquals("{half-written", quarantined.readText())
+        s.setSessionData(JsonPrimitive("read_mode"), JsonPrimitive("flow"))
+        s.flush()
+        assertEquals("{half-written", quarantined.readText())
+        assertTrue(file.readText().contains("read_mode"))
+    }
+
+    @Test
+    fun `session write leaves no tmp file`() {
+        val dir = freshDir()
+        val sessionDir = File(dir, "session")
+        SessionStore(sessionDir).apply {
+            setSessionData(JsonPrimitive("a"), JsonPrimitive(1))
+            flush()
+        }
+        val names = sessionDir.listFiles()!!.map { it.name }.sorted()
+        assertEquals(listOf("local_storage.json", "session_data.json"), names)
+    }
+
+    @Test
+    fun `local storage null removes the key`() {
+        val dir = freshDir()
+        val s = SessionStore(File(dir, "session"))
+        s.setLocalStorage(JsonPrimitive("k"), JsonPrimitive("v"))
+        s.setLocalStorage(JsonPrimitive("k"), JsonNull) // null removes, no tombstone
+        assertFalse("k" in s.localStorageJson.jsonObject)
+        s.flush()
+        // Survives the round-trip: no "k": null entry on disk either.
+        val reloaded = SessionStore(File(dir, "session"))
+        assertFalse("k" in reloaded.localStorageJson.jsonObject)
+    }
+
+    @Test
     fun `local storage sets clears and persists`() {
         val dir = freshDir()
         val s = SessionStore(File(dir, "session"))
@@ -104,5 +147,27 @@ class StoresTest {
         val dir = freshDir()
         val f = File(dir, "last-read.json").apply { writeText("[broken") }
         assertNull(LastReadStore(f).get("any"))
+        assertTrue(File(dir, "last-read.json.corrupt").isFile, "damaged file must be quarantined")
+    }
+
+    @Test
+    fun `last read drops malformed entries and keeps valid ones`() {
+        val dir = freshDir()
+        val f = File(dir, "last-read.json")
+        // One valid entry, one with a non-primitive cfi, one with a null
+        // pos_frac — the malformed entries must not crash get() on load.
+        f.writeText(
+            """
+            {
+              "good": {"cfi": "epubcfi(/6/4!)", "pos_frac": 0.5},
+              "bad-cfi": {"cfi": {"nested": 1}, "pos_frac": 0.5},
+              "bad-frac": {"cfi": "epubcfi(/6/8!)", "pos_frac": null}
+            }
+            """.trimIndent(),
+        )
+        val s = LastReadStore(f)
+        assertEquals("epubcfi(/6/4!)", s.get("good")!!.cfi)
+        assertNull(s.get("bad-cfi"))
+        assertNull(s.get("bad-frac"))
     }
 }

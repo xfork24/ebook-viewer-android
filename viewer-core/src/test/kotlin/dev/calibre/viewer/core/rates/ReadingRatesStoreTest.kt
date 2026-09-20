@@ -61,8 +61,14 @@ class ReadingRatesStoreTest {
 
     @Test
     fun `corrupt store starts fresh`() {
-        val f = File(freshDir(), "reading-rates.json").apply { writeText("{not json") }
+        val dir = freshDir()
+        val f = File(dir, "reading-rates.json").apply { writeText("{not json") }
         assertNull(ReadingRatesStore(f).get("any"))
-        assertTrue(f.isFile) // load must not delete/rewrite the file
+        // Load must not silently wipe user data: the damaged file is
+        // quarantined (renamed, content preserved) instead of being left to
+        // be overwritten by a later save.
+        val q = File(dir, "reading-rates.json.corrupt")
+        assertTrue(q.isFile)
+        assertEquals("{not json", q.readText())
     }
 }

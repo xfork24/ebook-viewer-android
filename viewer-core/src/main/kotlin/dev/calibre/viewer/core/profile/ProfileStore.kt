@@ -17,6 +17,8 @@
 
 package dev.calibre.viewer.core.profile
 
+import dev.calibre.viewer.core.internal.atomicWriteText
+import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
@@ -46,14 +48,17 @@ class ProfileStore(profilesFile: File) {
 
     fun get(name: String): JsonObject? = cache[name]
 
-    fun save(name: String, settings: JsonObject) {
+    /** The read-modify-write is synchronized so concurrent saves can't drop
+     *  each other (last assignment would otherwise win while the executor
+     *  persists only the survivor). */
+    @Synchronized fun save(name: String, settings: JsonObject) {
         val next = LinkedHashMap(cache)
         next[name] = settings
         cache = next
         writeExecutor.execute { persist(next) }
     }
 
-    fun delete(name: String) {
+    @Synchronized fun delete(name: String) {
         val next = LinkedHashMap(cache)
         if (next.remove(name) == null) return
         cache = next
@@ -68,11 +73,17 @@ class ProfileStore(profilesFile: File) {
     }
 
     private fun persist(map: Map<String, JsonObject>) {
-        val serializer = MapSerializer(String.serializer(), JsonObject.serializer())
-        val profilesEl = json.encodeToJsonElement(serializer, map)
-        val payload = buildJsonObject { put("profiles", profilesEl) }
-        file.parentFile?.mkdirs()
-        file.writeText(Json.encodeToString(JsonObject.serializer(), payload))
+        try {
+            val serializer = MapSerializer(String.serializer(), JsonObject.serializer())
+            val profilesEl = json.encodeToJsonElement(serializer, map)
+            val payload = buildJsonObject { put("profiles", profilesEl) }
+            file.parentFile?.mkdirs()
+            atomicWriteText(file, Json.encodeToString(JsonObject.serializer(), payload))
+        } catch (e: Exception) {
+            // A failed profiles write must not kill the process; the next
+            // save queues a fresh full snapshot and retries.
+            LOG.warning("profiles write failed: $e")
+        }
     }
 
     private fun load(): Map<String, JsonObject> {
@@ -80,9 +91,13 @@ class ProfileStore(profilesFile: File) {
         val text = try {
             file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
+            quarantineCorrupt(file)
             return LinkedHashMap()
         }
-        if (text.isBlank()) return LinkedHashMap()
+        if (text.isBlank()) {
+            quarantineCorrupt(file)
+            return LinkedHashMap()
+        }
         return try {
             val obj = json.parseToJsonElement(text).jsonObject
             val raw = obj["profiles"] as? JsonObject ?: return LinkedHashMap()
@@ -92,7 +107,12 @@ class ProfileStore(profilesFile: File) {
                 }
             }
         } catch (e: Exception) {
+            quarantineCorrupt(file)
             LinkedHashMap()
         }
+    }
+
+    private companion object {
+        private val LOG = java.util.logging.Logger.getLogger("dev.calibre.viewer.core.stores")
     }
 }

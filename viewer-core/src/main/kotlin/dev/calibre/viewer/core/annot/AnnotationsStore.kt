@@ -22,6 +22,8 @@
 
 package dev.calibre.viewer.core.annot
 
+import dev.calibre.viewer.core.internal.atomicWriteText
+import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
@@ -97,8 +99,12 @@ class AnnotationsStore(annotDir: File) {
 
     /**
      * Save both lists atomically — writes a single JSON object so a partial
-     * crash mid-write doesn't desync the two lists. The in-memory cache is
-     * updated synchronously so a subsequent load returns the new value.
+     * crash mid-write doesn't desync the two lists, through a tmp+rename so
+     * a process kill mid-write can never leave a truncated file. The
+     * in-memory cache is updated synchronously so a subsequent load returns
+     * the new value. A failed disk write is logged and retried by the next
+     * save (the queue holds full snapshots) — it must not kill the process
+     * and take every other queued write with it.
      */
     fun save(bookUri: String, bookmarks: List<BookmarkRecord>, highlights: List<HighlightRecord>) {
         val file = fileFor(bookUri)
@@ -108,8 +114,12 @@ class AnnotationsStore(annotDir: File) {
             put("highlights", highlightsToJson(highlights))
         }
         writeExecutor.execute {
-            dir.mkdirs()
-            file.writeText(Json.encodeToString(JsonObject.serializer(), payload))
+            try {
+                dir.mkdirs()
+                atomicWriteText(file, Json.encodeToString(JsonObject.serializer(), payload))
+            } catch (e: Exception) {
+                LOG.warning("annotations write failed for ${file.name}: $e")
+            }
         }
     }
 
@@ -129,20 +139,28 @@ class AnnotationsStore(annotDir: File) {
      */
     fun rekey(oldBookUri: String, newBookUri: String) {
         if (oldBookUri == newBookUri) return
-        cache[newBookUri] = snapshotFor(oldBookUri)
-        cache.remove(oldBookUri)
         val from = fileFor(oldBookUri)
         val to = fileFor(newBookUri)
-        if (!from.isFile) return
+        // Carry over ONLY when the old key actually holds something — a
+        // cached snapshot (its queued disk write may not have landed yet) or
+        // an on-disk file. Seeding cache[new] from a wholly absent old key
+        // would shadow any existing new-key file with an empty snapshot, and
+        // the next read-modify-write save would persist that empty state
+        // over the new key's real data.
+        if (!from.isFile && !cache.containsKey(oldBookUri)) return
+        cache[newBookUri] = snapshotFor(oldBookUri)
+        cache.remove(oldBookUri)
         writeExecutor.execute {
-            if (to.isFile) to.delete()
-            if (!from.renameTo(to)) {
-                try {
+            try {
+                if (!from.isFile) return@execute
+                if (to.isFile) to.delete()
+                if (!from.renameTo(to)) {
                     to.writeText(from.readText(Charsets.UTF_8))
                     from.delete()
-                } catch (e: Exception) {
-                    // Unmigratable — the old file stays and is simply orphaned.
                 }
+            } catch (e: Exception) {
+                // Unmigratable — the old file stays and is simply orphaned.
+                LOG.warning("annotations rekey ${from.name} -> ${to.name} failed: $e")
             }
         }
     }
@@ -154,12 +172,20 @@ class AnnotationsStore(annotDir: File) {
         val text = try {
             file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
+            quarantineCorrupt(file)
             return Snapshot(emptyList(), emptyList())
         }
-        if (text.isBlank()) return Snapshot(emptyList(), emptyList())
+        if (text.isBlank()) {
+            quarantineCorrupt(file)
+            return Snapshot(emptyList(), emptyList())
+        }
         val obj = try {
             json.parseToJsonElement(text).jsonObject
         } catch (e: Exception) {
+            // Quarantine instead of just ignoring: the next save must not
+            // overwrite the (possibly partially recoverable) damaged file
+            // with state derived from empty lists.
+            quarantineCorrupt(file)
             return Snapshot(emptyList(), emptyList())
         }
         val bookmarks = obj["bookmarks"]?.jsonArray.orEmpty().mapNotNull(::bookmarkFromJson)
@@ -247,6 +273,8 @@ class AnnotationsStore(annotDir: File) {
     }
 
     companion object {
+        private val LOG = java.util.logging.Logger.getLogger("dev.calibre.viewer.core.stores")
+
         private fun sha256(s: String): String {
             val bytes = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
             return bytes.joinToString("") { "%02x".format(it) }

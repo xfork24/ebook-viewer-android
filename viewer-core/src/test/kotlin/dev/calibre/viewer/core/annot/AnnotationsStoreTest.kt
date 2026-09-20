@@ -116,6 +116,53 @@ class AnnotationsStoreTest {
     }
 
     @Test
+    fun `corrupt file is quarantined so a later save cannot compound the loss`() {
+        val uri = "file:///sdcard/test.epub"
+        val fileName = "${AnnotationsStore.sha256Of(uri)}.json"
+        File(dir, fileName).writeText("""{"bookmarks":[{"title":"precious"}""")
+        val fresh = AnnotationsStore(dir)
+        assertEquals(emptyList(), fresh.loadBookmarks(uri))
+        // The damaged original survives as .corrupt...
+        assertEquals(
+            """{"bookmarks":[{"title":"precious"}""",
+            File(dir, "$fileName.corrupt").readText(),
+        )
+        // ...and a read-modify-write save derived from the empty state writes
+        // a NEW file rather than overwriting the quarantined data.
+        fresh.save(uri, listOf(BookmarkRecord(timestamp = "t1", pos = "p1", title = "New")), emptyList())
+        fresh.flush()
+        assertEquals(
+            """{"bookmarks":[{"title":"precious"}""",
+            File(dir, "$fileName.corrupt").readText(),
+        )
+        assertEquals("New", AnnotationsStore(dir).loadBookmarks(uri).single().title)
+    }
+
+    @Test
+    fun `save leaves no tmp file`() {
+        val uri = "file:///sdcard/test.epub"
+        store.save(uri, listOf(BookmarkRecord(timestamp = "t1", pos = "p1", title = "One")), emptyList())
+        store.flush()
+        assertEquals(
+            setOf("${AnnotationsStore.sha256Of(uri)}.json"),
+            dir.listFiles()!!.map { it.name }.toSet(),
+        )
+    }
+
+    @Test
+    fun `rekey with absent old file leaves the new key untouched`() {
+        val old = "file:///sdcard/absent.epub"
+        val new = "file:///sdcard/new.epub"
+        // An existing new-key file must NOT be shadowed by an empty snapshot
+        // seeded from a missing old-key file.
+        store.save(new, listOf(BookmarkRecord(timestamp = "t1", pos = "p1", title = "Existing")), emptyList())
+        store.flush()
+        val fresh = AnnotationsStore(dir)
+        fresh.rekey(old, new)
+        assertEquals("Existing", fresh.loadBookmarks(new).single().title)
+    }
+
+    @Test
     fun `save then read-modify-write without flush loses nothing`() {
         val uri = "file:///sdcard/test.epub"
         // The controller's pattern: two annotations events in quick

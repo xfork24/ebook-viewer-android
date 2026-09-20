@@ -86,5 +86,21 @@ class ProfileStoreTest {
         file.writeText("{ this is not json")
         val corrupt = ProfileStore(file)
         assertEquals(emptyMap(), corrupt.list())
+        // The damaged original is quarantined, not silently discarded.
+        assertEquals("{ this is not json", File(file.parentFile, "profiles.json.corrupt").readText())
+    }
+
+    @Test
+    fun `concurrent saves keep every profile`() {
+        // Two threads racing save() must not drop each other's entries via
+        // lost read-modify-write on the cache snapshot.
+        val threads = (0 until 8).map { i ->
+            Thread { store.save("profile-$i", buildJsonObject { put("k", i) }) }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        store.flush()
+        assertEquals((0 until 8).map { "profile-$it" }.toSet(), store.list().keys)
+        assertEquals(8, ProfileStore(file).list().size)
     }
 }

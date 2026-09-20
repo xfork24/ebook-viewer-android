@@ -15,6 +15,8 @@
 
 package dev.calibre.viewer.core.session
 
+import dev.calibre.viewer.core.internal.atomicWriteText
+import dev.calibre.viewer.core.internal.quarantineCorrupt
 import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
@@ -39,17 +41,21 @@ class SessionStore(sessionDir: File) {
             Thread(runnable, "session-store-writer").apply { isDaemon = true }
         }
 
-    val sessionDataJson: JsonObject
+    // Synchronized on `this`: the signal handlers mutate the maps while the
+    // UI thread snapshots them via the *Json getters — an unsynchronized
+    // iteration there is a ConcurrentModificationException waiting for the
+    // first non-main-thread signal arrival.
+    @get:Synchronized val sessionDataJson: JsonObject
         get() = JsonObject(sessionData.toMap())
 
-    val localStorageJson: JsonObject
+    @get:Synchronized val localStorageJson: JsonObject
         get() = JsonObject(localStorage.toMap())
 
     /** set_session_data signal handler (write-through). */
-    fun setSessionData(key: JsonElement, value: JsonElement) {
+    @Synchronized fun setSessionData(key: JsonElement, value: JsonElement) {
         when {
             key is JsonObject -> for ((k, v) in key) changeSession(k, v)
-            key.stringOrNull() == "*" && value is JsonNull -> clearAll()
+            key.stringOrNull() == "*" && value is JsonNull -> sessionData.clear()
             else -> {
                 val k = key.stringOrNull() ?: return
                 if (k != "*") changeSession(k, value)
@@ -59,22 +65,20 @@ class SessionStore(sessionDir: File) {
     }
 
     /** set_local_storage signal handler (write-through). */
-    fun setLocalStorage(key: JsonElement, value: JsonElement) {
+    @Synchronized fun setLocalStorage(key: JsonElement, value: JsonElement) {
         val k = key.stringOrNull() ?: return
-        if (k == "*" && value is JsonNull) {
-            localStorage.clear()
-        } else if (k != "*") {
-            localStorage[k] = value
+        when {
+            k == "*" && value is JsonNull -> localStorage.clear()
+            // Null removes — same contract as the session map above; storing
+            // a JsonNull tombstone would survive reloads and grow forever.
+            value is JsonNull -> localStorage.remove(k)
+            k != "*" -> localStorage[k] = value
         }
         save()
     }
 
     private fun changeSession(key: String, value: JsonElement) {
         if (value is JsonNull) sessionData.remove(key) else sessionData[key] = value
-    }
-
-    private fun clearAll() {
-        sessionData.clear()
     }
 
     /**
@@ -88,9 +92,15 @@ class SessionStore(sessionDir: File) {
         val sessionText = Json.encodeToString(JsonObject.serializer(), sessionDataJson)
         val localText = Json.encodeToString(JsonObject.serializer(), localStorageJson)
         writeExecutor.execute {
-            sessionFile.parentFile?.mkdirs()
-            sessionFile.writeText(sessionText)
-            localStorageFile.writeText(localText)
+            try {
+                sessionFile.parentFile?.mkdirs()
+                atomicWriteText(sessionFile, sessionText)
+                atomicWriteText(localStorageFile, localText)
+            } catch (e: Exception) {
+                // A failed session write must not kill the process; the next
+                // signal queues a fresh full snapshot and retries.
+                LOG.warning("session write failed: $e")
+            }
         }
     }
 
@@ -106,17 +116,27 @@ class SessionStore(sessionDir: File) {
         val text = try {
             file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
+            quarantineCorrupt(file)
             return LinkedHashMap()
         }
-        if (text.isBlank()) return LinkedHashMap()
+        if (text.isBlank()) {
+            quarantineCorrupt(file)
+            return LinkedHashMap()
+        }
         return try {
             json.parseToJsonElement(text).jsonObject.toMutableMap()
         } catch (e: Exception) {
-            // Corrupt store: start fresh rather than refuse to open books.
+            // Corrupt store: quarantine (preserve the damaged original for
+            // recovery) and start fresh rather than refuse to open books.
+            quarantineCorrupt(file)
             LinkedHashMap()
         }
     }
 
     private fun JsonElement.stringOrNull(): String? =
         (this as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+
+    private companion object {
+        private val LOG = java.util.logging.Logger.getLogger("dev.calibre.viewer.core.stores")
+    }
 }

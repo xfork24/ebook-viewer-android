@@ -208,4 +208,58 @@ class RenderBookCacheTest {
         assertFalse(orphan.isDirectory, "orphan dir should be reclaimed")
         assertTrue(book.isDirectory, "indexed entry should be untouched")
     }
+
+    @Test
+    fun `evictToSize purges stale index entries whose dir is gone`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val src = makeFile()
+        val trans = cache.createTransient()
+        File(trans, "calibre-book-manifest.json").writeText("{}")
+        cache.commit(src, trans)
+        // Simulate an evict that died between delete-dir and index rewrite:
+        // dir removed out-of-band, index entry left behind. Without the
+        // purge, index.json keeps the dead hash forever.
+        val hash = cache.calculateBookHash(src)
+        File(root, "ev2/f/$hash").deleteRecursively()
+        val idxBefore = File(root, "ev2/index.json").readText()
+        assertTrue(hash in idxBefore)
+        cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
+        val idxAfter = File(root, "ev2/index.json").readText()
+        assertFalse(hash in idxAfter, "stale index entry must be purged")
+    }
+
+    @Test
+    fun `concurrent commit and evict leave the index consistent`() {
+        val root = tempRoot()
+        val cache = RenderBookCache(root)
+        val sources = (0 until 12).map { makeFile(seed = it) }
+        // Hammer: one thread commits books while another evicts them. The
+        // index must never end up referencing a deleted directory (an
+        // unlocked evict interleaving with evictToSize used to be able to
+        // resurrect entries) nor lose a committed book's entry while its
+        // dir survives as an orphan.
+        val committer = Thread {
+            for (src in sources) {
+                val trans = cache.createTransient()
+                File(trans, "calibre-book-manifest.json").writeText("{}")
+                cache.commit(src, trans)
+            }
+        }
+        val evictor = Thread {
+            for (src in sources) {
+                cache.evict(cache.calculateBookHash(src))
+            }
+        }
+        committer.start(); evictor.start()
+        committer.join(); evictor.join()
+        cache.evictToSize(maxBytes = 1024L * 1024 * 1024)
+        // After a settling sweep: every surviving f/<hash> dir has an index
+        // entry, and every index entry has a surviving dir (stale purged).
+        val idxText = File(root, "ev2/index.json").readText()
+        val indexed = Regex("\"([0-9a-f]{40})\"\\s*:").findAll(idxText).map { it.groupValues[1] }.toSet()
+        val dirs = File(root, "ev2/f").listFiles()!!.map { it.name }.toSet()
+        for (hash in indexed) assertTrue(hash in dirs, "index entry $hash has no dir")
+        for (dir in dirs) assertTrue(dir in indexed, "dir $dir has no index entry")
+    }
 }

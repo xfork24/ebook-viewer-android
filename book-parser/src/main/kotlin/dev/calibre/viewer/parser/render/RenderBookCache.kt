@@ -100,7 +100,14 @@ class RenderBookCache(private val rootDir: File) {
         transientDir.deleteRecursively()
     }
 
-    /** Evict a finished entry by hash. */
+    /**
+     * Evict a finished entry by hash. Synchronized like its peers: callers
+     * invoke this unlocked (book switch / reload), and an unlocked evict can
+     * interleave with evictToSize's read-index → delete-dir → rewrite-index
+     * sequence and resurrect an index entry for a directory that was just
+     * deleted.
+     */
+    @Synchronized
     fun evict(bookHash: String) {
         File(finishedDir, bookHash).deleteRecursively()
         removeIndexEntry(bookHash)
@@ -131,7 +138,9 @@ class RenderBookCache(private val rootDir: File) {
         val sizes = HashMap<String, Long>()
         var total = 0L
         val onDisk = finishedDir.listFiles()?.filter { it.isDirectory } ?: return
+        val diskHashes = HashSet<String>()
         for (dir in onDisk) {
+            diskHashes.add(dir.name)
             val size = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
             sizes[dir.name] = size
             if (dir.name !in idx.keys) {
@@ -140,6 +149,16 @@ class RenderBookCache(private val rootDir: File) {
             } else {
                 total += size
             }
+        }
+        // Stale index entries (dir already gone — evicted by an unlocked
+        // path, or a crash mid-evict) were previously skipped forever; the
+        // index then grows monotonically and every read/rewrite pays for
+        // dead hashes. Purge them here.
+        val stale = idx.keys - diskHashes
+        if (stale.isNotEmpty()) {
+            for (hash in stale) idx.remove(hash)
+            indexFile.parentFile?.mkdirs()
+            indexFile.writeText(serializeIndex(idx), Charsets.UTF_8)
         }
         val byAge = idx.keys
             .filter { it != protect && File(finishedDir, it).isDirectory }
@@ -150,16 +169,6 @@ class RenderBookCache(private val rootDir: File) {
                 removeIndexEntry(hash)
                 total -= sizes[hash] ?: 0L
             }
-        }
-    }
-
-    /** Recompute every entry; entries whose source file no longer matches get evicted. */
-    fun sweep(sourceResolver: (String) -> File?) {
-        val idx = readIndex()
-        for ((hash, entry) in idx.toMap()) {
-            val src = entry["sourcePath"] as? String ?: continue
-            val f = sourceResolver(src) ?: continue
-            if (!f.isFile || calculateBookHash(f) != hash) evict(hash)
         }
     }
 
